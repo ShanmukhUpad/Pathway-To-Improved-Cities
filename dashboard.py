@@ -36,6 +36,12 @@ community_area_names = {
 
 pivot['Community Area Name'] = pivot['Community Area'].map(community_area_names)
 
+# --- Create lag features for all crimes globally ---
+lag_crime_cols = [c for c in pivot.columns if c not in ['Community Area', 'Year', 'Month', 'Community Area Name']]
+for crime in lag_crime_cols:
+    pivot[f'{crime}_lag1'] = pivot.groupby('Community Area')[crime].shift(1)
+    pivot[f'{crime}_lag3'] = pivot.groupby('Community Area')[crime].shift(3)
+
 # Community Area Dropdowns
 community_areas = sorted(pivot['Community Area Name'].unique())  # sorted alphabetically
 crime_cols = [c for c in pivot.columns if c not in ['Community Area', 'Year', 'Month', 'Community Area Name'] 
@@ -122,3 +128,54 @@ fig = px.choropleth_mapbox(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+
+# --- Prediction Map Section ---
+st.subheader("Predicted Crime Map")
+
+# Dropdown to select crime type for prediction
+crime_pred_type = st.selectbox("Select Crime Type to Predict", crime_cols, key="crime_map_pred_select")
+
+# Normalize crime name to uppercase to match lag columns
+crime_pred_type_upper = crime_pred_type.upper()
+
+# Select lag columns for the chosen crime
+lag_cols = [f'{crime_pred_type_upper}_lag1', f'{crime_pred_type_upper}_lag3']
+X = pivot[lag_cols].dropna()
+y = pivot[crime_pred_type_upper][X.index]
+
+if X.empty or y.empty:
+    st.warning(f"No lag features found for {crime_pred_type}. Cannot generate predictions.")
+else:
+    # Train Random Forest on lag features for this crime
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X, y)
+
+    # Predict the next month for each community area
+    # Get the latest month for each community area
+    latest_month = pivot.groupby('Community Area Name').tail(1).copy()
+
+    # Prepare X_pred from lag columns
+    X_pred = latest_month[lag_cols]
+
+    # Predict
+    latest_month['Predicted'] = model.predict(X_pred)
+
+    # Aggregate predicted counts by community area (though one row per area)
+    pred_map_data = latest_month[['Community Area Name', 'Predicted']]
+
+    # Create choropleth map of predictions
+    fig_pred = px.choropleth_mapbox(
+        pred_map_data,
+        geojson=chicago_geo,
+        locations='Community Area Name',
+        featureidkey="properties.community",
+        color='Predicted',
+        color_continuous_scale="Reds",
+        mapbox_style="carto-positron",
+        zoom=9,
+        center={"lat": 41.8781, "lon": -87.6298},
+        opacity=0.6,
+        labels={'Predicted': f'Predicted {crime_pred_type} Count'}
+    )
+
+    st.plotly_chart(fig_pred, use_container_width=True)
