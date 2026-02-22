@@ -1,36 +1,58 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# ==============================
+# Python Bytecode & Cache
+# ==============================
+__pycache__/
+*.py[cod]
+*$py.class
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.js
+# ==============================
+# Virtual Environments
+# ==============================
+venv/
+.env/
+.venv/
 
-# testing
-/coverage
-
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
+# ==============================
+# OS Files
+# ==============================
 .DS_Store
-*.pem
+Thumbs.db
 
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# ==============================
+# Jupyter Notebooks
+# ==============================
+.ipynb_checkpoints/
 
-# local env files
-.env*.local
-.env
+# ==============================
+# Python Packaging
+# ==============================
+*.egg-info/
+dist/
+build/
 
-# vercel
-.vercel
+# ==============================
+# Logs and SQLite databases
+# ==============================
+*.log
+*.sqlite3
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# ==============================
+# Streamlit Cache
+# ==============================
+.streamlit/
+
+# ==============================
+# IDEs
+# ==============================
+# VSCode
+.vscode/
+# PyCharm
+.idea/
+
+# ==============================
+# Environment / Secrets
+# ==============================
+.env.local
+.env.development
+.env.production
+.env.test
