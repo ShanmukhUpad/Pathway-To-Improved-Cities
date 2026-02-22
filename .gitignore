@@ -37,7 +37,7 @@ build/
 *.sqlite3
 
 # ==============================
-# Streamlit Cache
+# Streamlit Cache / Config
 # ==============================
 .streamlit/
 
@@ -56,3 +56,17 @@ build/
 .env.development
 .env.production
 .env.test
+
+# ==============================
+# Data Files
+# ==============================
+data/raw/
+data/processed/
+*.csv
+*.geojson
+*.parquet
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
