@@ -74,22 +74,17 @@ if len(model_data) > 0:
     next_month_features = X.iloc[-1].values.reshape(1, -1)
     prediction = model.predict(next_month_features)[0]
     
-    st.subheader(f"Predicted {selected_crime} for next month")
+    st.subheader(f"Predicted {selected_crime} counts for next month")
     st.write(round(prediction))
 else:
     st.write("Not enough data to predict yet.")
 
 # --- Interactive map ---
-st.subheader("Chicago Crime Map")
 
-crime_map_type = st.selectbox("Select Crime Type for Map", crime_cols, key="map_select")
-map_data = pivot.groupby('Community Area Name')[crime_map_type].sum().reset_index()
 
 # Load GeoJSON for Chicago community areas
 with open(r"C:\Users\moose\.cache\kagglehub\datasets\doyouevendata\chicago-community-areas-geojson\versions\1\chicago-community-areas.geojson") as f:
     chicago_geo = json.load(f)
-
-st.json(chicago_geo['features'][0])
 
 # --- Interactive Map Section ---
 st.subheader("Chicago Crime Map")
@@ -151,16 +146,9 @@ else:
     model.fit(X, y)
 
     # Predict the next month for each community area
-    # Get the latest month for each community area
     latest_month = pivot.groupby('Community Area Name').tail(1).copy()
-
-    # Prepare X_pred from lag columns
     X_pred = latest_month[lag_cols]
-
-    # Predict
     latest_month['Predicted'] = model.predict(X_pred)
-
-    # Aggregate predicted counts by community area (though one row per area)
     pred_map_data = latest_month[['Community Area Name', 'Predicted']]
 
     # Create choropleth map of predictions
