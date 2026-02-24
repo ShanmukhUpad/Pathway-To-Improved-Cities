@@ -19,6 +19,23 @@ This project analyzes urban datasets from cities to predict trends in crime, env
 - **Language:** Python  
 - **Libraries:** Pandas, GeoPandas, NumPy, scikit-learn, Matplotlib, Seaborn, Plotly, Folium, Streamlit
 
+## How to Install Dependencies and Run the Dashboard
+
+### 1. Set up the virtual environment (In terminal)
+```
+bash setup.sh
+```
+For Mac/Linux:
+```
+source venv/bin/activate
+```
+For Windows:
+```
+venv\Scripts\activate
+```
+### 2: Running the dashboard: 
+```Streamlit run src/dashboard.py``` (or if you are already in src then just ```Streamlit run dashboard.py```)
+
 ## Timeline:
 - Week 6 (Complete): Setup repository, create a dashboard, get an example of a dataset visualization for current and predicted
 - Week 7: Assign people into different domains, each person picks datasets to work with, more datasets are added to dashboard
