@@ -17,4 +17,16 @@ This project analyzes urban datasets from cities to predict trends in crime, env
 
 ## Languages / Tools / Frameworks
 - **Language:** Python  
-- **Libraries:** Pandas, GeoPandas, NumPy, scikit-learn, Matplotlib, Seaborn, Plotly, Folium, Streamlit  
+- **Libraries:** Pandas, GeoPandas, NumPy, scikit-learn, Matplotlib, Seaborn, Plotly, Folium, Streamlit
+
+## Timeline:
+- Week 6 (Complete): Setup repository, create a dashboard, get an example of a dataset visualization for current and predicted
+- Week 7: Assign people into different domains, each person picks datasets to work with, more datasets are added to dashboard
+- Week 8: Train models' random forest algorithms to be more accurate, create lag features for each dataset. Integrate all the domains into dashboard, with a tab to select each one.
+
+SPRING BREAK
+
+- Week 9: Implement gradient boosting for the models, and maybe also add the RMSE, MAE, and R^2
+- Week 10: Make new types of visualizations (scatterplots, KDE, etc) and also add a feature to search for datasets via city
+- Week 11: Implement File Upload System, where any user can upload their own dataset, if it has certain columns, then they can choose what domain the dataset belongs to, and it will be added to the dashboard.
+-Week 12: Implement computer vision features such as building a CNN to recognize image data to then visualize problem areas within a city.
