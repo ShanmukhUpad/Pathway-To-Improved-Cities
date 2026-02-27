@@ -113,12 +113,15 @@ fig = px.choropleth_mapbox(
     featureidkey="properties.community",
     color=crime_map_type,
     color_continuous_scale="Reds",
-    mapbox_style="carto-positron",
+    mapbox_style="open-street-map",
     zoom=9,
     center={"lat": 41.8781, "lon": -87.6298},
-    opacity=0.6,
+    opacity=0.5,
     labels={crime_map_type: "Crime Count"}
 )
+
+# Scale bar truncated to 2 decimal places
+fig.update_coloraxes(colorbar_tickformat='.2f')
 
 st.plotly_chart(fig, use_container_width=True)
 
@@ -147,7 +150,9 @@ else:
 
         latest_month = pivot.groupby('Community Area Name').tail(1).copy()
         X_pred = latest_month[lag_cols].fillna(0)
-        latest_month['Predicted'] = pred_model.predict(X_pred)
+
+        # Truncate predictions to 2 decimal places
+        latest_month['Predicted'] = pred_model.predict(X_pred).round(2)
         pred_map_data = latest_month[['Community Area Name', 'Predicted']]
 
         fig_pred = px.choropleth_mapbox(
@@ -157,11 +162,14 @@ else:
             featureidkey="properties.community",
             color='Predicted',
             color_continuous_scale="Reds",
-            mapbox_style="carto-positron",
+            mapbox_style="open-street-map",
             zoom=9,
             center={"lat": 41.8781, "lon": -87.6298},
-            opacity=0.6,
+            opacity=0.5,
             labels={'Predicted': f'Predicted {crime_pred_type} Count'}
         )
+
+        # Scale bar truncated to 2 decimal places
+        fig_pred.update_coloraxes(colorbar_tickformat='.2f')
 
         st.plotly_chart(fig_pred, use_container_width=True)
