@@ -2,8 +2,10 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import os
+import file_loader
 
-CRASH_CSV = "Traffic_Crashes_-_Crashes_20260309.csv"
+CRASH_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Traffic_Crashes_-_Crashes_20260309.csv")
 
 DAY_LABELS = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
 MONTH_LABELS = {
@@ -87,67 +89,101 @@ def load_crash_data():
 
 
 # ──────────────────────────────────────────────
-# Main render function — called from app.py
+# Main render function — called from dashboard.py
 # ──────────────────────────────────────────────
 
+def _split_and_clean(df):
+    """Same cleaning as load_crash_data() but accepts a raw DataFrame directly."""
+    df = df.copy()
+    df['CRASH_DATE'] = pd.to_datetime(df['CRASH_DATE'], infer_datetime_format=True)
+    df['CRASH_HOUR']        = df['CRASH_DATE'].dt.hour
+    df['CRASH_DAY_OF_WEEK'] = df['CRASH_DATE'].dt.dayofweek
+    df['CRASH_MONTH']       = df['CRASH_DATE'].dt.month
+
+    df1 = df[[
+        'WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND', 'ROAD_DEFECT',
+        'ALIGNMENT', 'TRAFFICWAY_TYPE', 'LANE_CNT', 'POSTED_SPEED_LIMIT',
+        'TRAFFIC_CONTROL_DEVICE', 'DEVICE_CONDITION', 'INTERSECTION_RELATED_I',
+        'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'CRASH_MONTH', 'FIRST_CRASH_TYPE'
+    ]].copy().dropna()
+    df1['LANE_CNT'] = pd.to_numeric(df1['LANE_CNT'], errors='coerce')
+    df1.dropna(subset=['LANE_CNT'], inplace=True)
+    df1['LANE_CNT'] = df1['LANE_CNT'].astype(int)
+    for col in ['WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND', 'ROAD_DEFECT',
+                'ALIGNMENT', 'TRAFFICWAY_TYPE', 'TRAFFIC_CONTROL_DEVICE', 'DEVICE_CONDITION', 'FIRST_CRASH_TYPE']:
+        df1 = df1[df1[col].str.upper().str.strip() != 'UNKNOWN']
+        df1 = df1[df1[col].str.strip() != '']
+    df1 = df1[df1['INTERSECTION_RELATED_I'].str.upper().str.strip().isin(['Y', 'N'])]
+    df1 = df1[(df1['POSTED_SPEED_LIMIT'] > 0) & (df1['POSTED_SPEED_LIMIT'] <= 100)]
+    df1 = df1[(df1['LANE_CNT'] > 0) & (df1['LANE_CNT'] <= 20)]
+    df1 = df1[df1['CRASH_HOUR'].between(0, 23)]
+    df1 = df1[df1['CRASH_DAY_OF_WEEK'].between(0, 6)]
+    df1 = df1[df1['CRASH_MONTH'].between(1, 12)]
+    df1.reset_index(drop=True, inplace=True)
+
+    df2 = df[[
+        'FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
+        'ROADWAY_SURFACE_COND', 'POSTED_SPEED_LIMIT', 'TRAFFICWAY_TYPE',
+        'INTERSECTION_RELATED_I', 'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'DAMAGE',
+        'NUM_UNITS', 'HIT_AND_RUN_I'
+    ]].copy().dropna()
+    for col in ['FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
+                'ROADWAY_SURFACE_COND', 'TRAFFICWAY_TYPE']:
+        df2 = df2[df2[col].str.upper().str.strip() != 'UNKNOWN']
+        df2 = df2[df2[col].str.strip() != '']
+    df2 = df2[df2['INTERSECTION_RELATED_I'].str.upper().str.strip().isin(['Y', 'N'])]
+    df2 = df2[df2['HIT_AND_RUN_I'].str.upper().str.strip().isin(['Y', 'N'])]
+    df2 = df2[df2['DAMAGE'].str.upper().str.strip().isin(['$500 OR LESS', '$501 - $1,500', 'OVER $1,500'])]
+    df2 = df2[(df2['POSTED_SPEED_LIMIT'] > 0) & (df2['POSTED_SPEED_LIMIT'] <= 100)]
+    df2 = df2[(df2['NUM_UNITS'] > 0) & (df2['NUM_UNITS'] <= 50)]
+    df2 = df2[df2['CRASH_HOUR'].between(0, 23)]
+    df2 = df2[df2['CRASH_DAY_OF_WEEK'].between(0, 6)]
+    df2.reset_index(drop=True, inplace=True)
+    return df1, df2
+
+
 def render(chicago_geo=None):
-    """
-    Render the Infrastructure tab content.
-    Pass chicago_geo (GeoJSON dict) if a crash-location map is desired in future.
-    """
-    st.header("Infrastructure Dashboard")
+    st.header("Transportation Dashboard")
     st.markdown(
         "Traffic crash patterns across Chicago — road conditions, timing, "
         "crash types, and damage severity."
     )
 
-    try:
-        df1, df2 = load_crash_data()
-    except FileNotFoundError:
-        st.info(
-            f"`{CRASH_CSV}` not found. Place the file in the working directory to enable this dashboard.\n\n"
-            "Download it from the "
-            "[Chicago Data Portal — Traffic Crashes](https://data.cityofchicago.org/Transportation/"
-            "Traffic-Crashes-Crashes/85ca-t3if)."
+    with st.expander("Upload a supplemental dataset"):
+        uploaded_df, _ = file_loader.uploader(
+            domain="transportation",
+            local_csv=None,
+            label="Upload a crash dataset"
         )
-        return
+
+    if uploaded_df is not None:
+        df1, df2 = _split_and_clean(uploaded_df)
+    else:
+        try:
+            df1, df2 = load_crash_data()
+        except FileNotFoundError:
+            st.info(
+                f"`{CRASH_CSV}` not found. Place the file in the working directory, "
+                "or upload a dataset using the expander above.\n\n"
+                "Download from the "
+                "[Chicago Data Portal — Traffic Crashes]"
+                "(https://data.cityofchicago.org/Transportation/Traffic-Crashes-Crashes/85ca-t3if)."
+            )
+            return
 
     # ── Section 1: Temporal patterns ────────────────────────────────────
     st.subheader("Crash Timing")
     col_h, col_d, col_m = st.columns(3)
 
     with col_h:
-        def to_time_of_day(hour):
-            if 5 <= hour <= 11:
-                return 'Morning'
-            elif 12 <= hour <= 16:
-                return 'Afternoon'
-            elif 17 <= hour <= 21:
-                return 'Evening'
-            elif 22 <= hour <= 23 or hour == 0:
-                return 'Night'
-            else:  # 1, 2, 3, 4
-                return 'Late Night'
-
-        tod = df1['CRASH_HOUR'].map(to_time_of_day)
-        tod_counts = tod.value_counts().reindex(
-            ['Morning', 'Afternoon', 'Evening', 'Night', 'Late Night']
-        ).reset_index()
-        tod_counts.columns = ['Time of Day', 'Crashes']
+        hourly = df1.groupby('CRASH_HOUR').size().reset_index(name='Crashes')
         fig_h = px.bar(
-            tod_counts, x='Time of Day', y='Crashes',
-            labels={'Time of Day': 'Time of Day', 'Crashes': 'Number of Crashes'},
-            title='Crashes by Time of Day',
-            color='Time of Day',
-            color_discrete_map={
-                'Morning':    '#fdbe85',
-                'Afternoon':  '#fd8d3c',
-                'Evening':    '#e6550d',
-                'Night':      '#a63603',
-                'Late Night': '#4d1a00'
-            }
+            hourly, x='CRASH_HOUR', y='Crashes',
+            labels={'CRASH_HOUR': 'Hour of Day', 'Crashes': 'Number of Crashes'},
+            title='Crashes by Hour of Day',
+            color='Crashes', color_continuous_scale='Oranges'
         )
-        fig_h.update_layout(showlegend=False)
+        fig_h.update_layout(coloraxis_showscale=False)
         st.plotly_chart(fig_h, use_container_width=True)
 
     with col_d:
