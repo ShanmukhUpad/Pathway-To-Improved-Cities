@@ -3,54 +3,142 @@ import tempfile
 import os
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 import geopandas as gpd
 
-MIN_MATCH_COUNT = 3  # moderate threshold
+MIN_MATCH_COUNT = 4  # require at least 4 domain columns + lat/lon
 
 # ── Domain column signatures ─────────────────────────────────────────────────
 # Each tab registers the columns it knows about. Uploaded files must match
-# at least MIN_MATCH_COUNT of these to be accepted for that tab.
+# at least MIN_MATCH_COUNT of these AND contain latitude/longitude.
 
 DOMAIN_COLUMNS = {
     "transportation": {
+        # Crash data
         "CRASH_DATE", "CRASH_HOUR", "CRASH_DAY_OF_WEEK", "CRASH_MONTH",
         "WEATHER_CONDITION", "LIGHTING_CONDITION", "ROADWAY_SURFACE_COND",
         "ROAD_DEFECT", "ALIGNMENT", "TRAFFICWAY_TYPE", "LANE_CNT",
         "POSTED_SPEED_LIMIT", "TRAFFIC_CONTROL_DEVICE", "DEVICE_CONDITION",
         "INTERSECTION_RELATED_I", "FIRST_CRASH_TYPE", "CRASH_TYPE",
-        "DAMAGE", "NUM_UNITS", "HIT_AND_RUN_I", "LATITUDE", "LONGITUDE",
-        "CRASH_RECORD_ID", "CRASH_DATE_EST_I",
+        "DAMAGE", "NUM_UNITS", "HIT_AND_RUN_I", "CRASH_RECORD_ID", "CRASH_DATE_EST_I",
+        # Transit
+        "ROUTE", "ROUTE_ID", "STOP_ID", "STOP_NAME", "DIRECTION",
+        "RIDERSHIP", "BOARDINGS", "ALIGHTINGS", "HEADWAY", "DELAY",
+        "ON_TIME", "TRIP_ID", "SERVICE_DATE", "DAY_TYPE",
+        "BUS_ROUTE", "RAIL_LINE", "STATION", "PLATFORM",
+        "DEPARTURE_TIME", "ARRIVAL_TIME", "TRANSIT_TYPE",
+        # Traffic
+        "SPEED", "VOLUME", "VEHICLE_COUNT", "TRAFFIC_COUNT",
+        "VEHICLE_TYPE", "MODE", "DISTANCE",
+        # Parking violations
+        "VIOLATION_TYPE", "LICENSE_PLATE", "FINE_AMOUNT", "ISSUE_DATE",
+        "METER_TYPE", "PARKING_ZONE", "TICKET_NUMBER",
+        # Pedestrian & bike
+        "BIKE_ROUTE", "PEDESTRIAN", "SIDEWALK_CONDITION",
+        # Shared
+        "LATITUDE", "LONGITUDE", "COMMUNITY_AREA", "WARD", "STREET_NAME",
+        "STREET_NUMBER", "DIRECTION_OF_TRAVEL", "DATE",
     },
     "public_safety": {
+        # Crime (Chicago Data Portal standard columns)
         "Community Area", "Year", "Month", "IUCR", "Primary Type",
         "Description", "Location Description", "Arrest", "Domestic",
-        "Beat", "District", "Ward", "Community Area", "FBI Code",
+        "Beat", "District", "Ward", "FBI Code", "Case Number",
+        "Date", "Block", "Updated On", "X Coordinate", "Y Coordinate",
         "Latitude", "Longitude",
+        # General safety / incidents
+        "OFFENSE_TYPE", "INCIDENT_DATE", "REPORTING_AREA",
+        "VICTIM_AGE", "VICTIM_SEX", "VICTIM_RACE",
+        "WEAPON_TYPE", "DISPOSITION", "PRECINCT",
+        "CALL_TYPE", "RESPONSE_TIME", "PRIORITY",
+        "FIRE_INCIDENT", "EMS_INCIDENT", "UNIT",
+        "OFFENSE_CODE", "REPORTED_DATE", "CLEARED",
     },
     "infrastructure": {
-        "Community Area", "Year", "Month", "SR_NUMBER", "SR_TYPE",
-        "SR_SHORT_CODE", "OWNER_DEPARTMENT", "STATUS", "ORIGIN",
-        "CREATED_DATE", "LAST_MODIFIED_DATE", "CLOSED_DATE",
-        "STREET_ADDRESS", "CITY", "STATE", "ZIP_CODE",
+        "Community Area", "Year", "Month",
+        # 311 service requests
+        "SR_NUMBER", "SR_TYPE", "SR_SHORT_CODE", "OWNER_DEPARTMENT",
+        "STATUS", "ORIGIN", "CREATED_DATE", "LAST_MODIFIED_DATE",
+        "CLOSED_DATE", "STREET_ADDRESS", "CITY", "STATE", "ZIP_CODE",
         "WARD", "POLICE_DISTRICT", "LATITUDE", "LONGITUDE",
+        # Building permits
+        "PERMIT_NUMBER", "PERMIT_TYPE", "APPLICATION_START_DATE",
+        "ISSUE_DATE", "WORK_TYPE", "TOTAL_FEE", "CONTRACTOR",
+        "BUILDING_TYPE", "PROPERTY_USE",
+        # Assets / inspections
+        "INSPECTION_STATUS", "REPORTED_DATE", "COMPLETION_DATE",
+        "REPAIR_TYPE", "ASSET_ID", "ASSET_TYPE", "CONDITION",
+        "PRIORITY", "DEPARTMENT",
     },
     "socioeconomics": {
-        "Community Area", "PERCENT OF HOUSING CROWDED",
-        "PERCENT HOUSEHOLDS BELOW POVERTY", "PERCENT AGED 16+ UNEMPLOYED",
-        "PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA",
+        "Community Area",
+        # Hardship / poverty
+        "PERCENT OF HOUSING CROWDED", "PERCENT HOUSEHOLDS BELOW POVERTY",
+        "PERCENT AGED 16+ UNEMPLOYED", "PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA",
         "PERCENT AGED UNDER 18 OR OVER 64", "PER CAPITA INCOME",
-        "HARDSHIP INDEX", "Median Income", "Poverty Rate",
+        "HARDSHIP INDEX", "Median Income", "Poverty Rate", "BELOW_POVERTY_LINE",
+        # Demographics
         "Population", "White", "Black", "Hispanic", "Asian",
+        "MEDIAN_AGE", "FOREIGN_BORN", "ENGLISH_ONLY", "SPEAKS_SPANISH",
+        # Housing
+        "TOTAL_HOUSEHOLDS", "OWNER_OCCUPIED", "RENTER_OCCUPIED",
+        "VACANT_UNITS", "MEDIAN_RENT", "MEDIAN_HOME_VALUE",
+        # Education / employment
+        "UNEMPLOYMENT_RATE", "EDUCATION_LEVEL",
+        "HIGH_SCHOOL_GRAD", "BACHELORS_DEGREE",
+        # Health / benefits
+        "HEALTH_INSURANCE", "SNAP_BENEFITS", "GINI_INDEX",
+        # Coordinates (optional but allowed)
+        "LATITUDE", "LONGITUDE",
     },
 }
 
+# ── Lat/lon detection ─────────────────────────────────────────────────────────
+
+_LAT_ALIASES = {"LATITUDE", "LAT", "Y_COORD", "Y_COORDINATE"}
+_LON_ALIASES = {"LONGITUDE", "LON", "LNG", "LONG", "X_COORD", "X_COORDINATE"}
+
+# Bounding box column names (case-insensitive)
+_BBOX_NORTH = {"NORTH", "NORTH_BOUND", "NORTH_LAT", "MAX_LAT"}
+_BBOX_SOUTH = {"SOUTH", "SOUTH_BOUND", "SOUTH_LAT", "MIN_LAT"}
+_BBOX_EAST  = {"EAST",  "EAST_BOUND",  "EAST_LON",  "MAX_LON", "MAX_LNG"}
+_BBOX_WEST  = {"WEST",  "WEST_BOUND",  "WEST_LON",  "MIN_LON", "MIN_LNG"}
+
+
+def _find_latlon(df):
+    """
+    Return (df, lat_col, lon_col).
+    First checks for explicit lat/lon columns. If not found, checks for
+    bounding box columns (NORTH/SOUTH/EAST/WEST) and derives centroid columns.
+    """
+    upper_map = {c.upper().strip(): c for c in df.columns}
+
+    lat_col = next((upper_map[a] for a in _LAT_ALIASES if a in upper_map), None)
+    lon_col = next((upper_map[a] for a in _LON_ALIASES if a in upper_map), None)
+
+    if lat_col and lon_col:
+        return df, lat_col, lon_col
+
+    # Fall back to bounding box centroid
+    north = next((upper_map[a] for a in _BBOX_NORTH if a in upper_map), None)
+    south = next((upper_map[a] for a in _BBOX_SOUTH if a in upper_map), None)
+    east  = next((upper_map[a] for a in _BBOX_EAST  if a in upper_map), None)
+    west  = next((upper_map[a] for a in _BBOX_WEST  if a in upper_map), None)
+
+    if north and south and east and west:
+        df = df.copy()
+        df["_latitude"]  = (pd.to_numeric(df[north], errors="coerce") +
+                            pd.to_numeric(df[south], errors="coerce")) / 2
+        df["_longitude"] = (pd.to_numeric(df[east],  errors="coerce") +
+                            pd.to_numeric(df[west],  errors="coerce")) / 2
+        return df, "_latitude", "_longitude"
+
+    return df, None, None
+
+
+# ── File readers ──────────────────────────────────────────────────────────────
 
 def _read_uploaded_file(uploaded_file):
-    """
-    Read a single uploaded file into a DataFrame.
-    Supports CSV, Parquet, GeoJSON.
-    Returns (df, error_message). On success error_message is None.
-    """
     name = uploaded_file.name.lower()
     try:
         if name.endswith(".csv"):
@@ -69,11 +157,6 @@ def _read_uploaded_file(uploaded_file):
 
 
 def _read_shapefile(uploaded_files):
-    """
-    Assemble a shapefile from its component parts uploaded together.
-    Writes them to a temp directory, then reads with geopandas.
-    Returns (df, error_message).
-    """
     required_exts = {".shp", ".shx", ".dbf"}
     names_by_ext = {os.path.splitext(f.name)[1].lower(): f for f in uploaded_files}
     missing = required_exts - set(names_by_ext.keys())
@@ -85,7 +168,6 @@ def _read_shapefile(uploaded_files):
         )
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Write all components with a shared stem
             for ext, f in names_by_ext.items():
                 dest = os.path.join(tmpdir, f"upload{ext}")
                 with open(dest, "wb") as out:
@@ -98,18 +180,71 @@ def _read_shapefile(uploaded_files):
         return None, f"Could not read shapefile: {e}"
 
 
+# ── Validation ────────────────────────────────────────────────────────────────
+
 def _validate(df, domain):
     """
-    Check that df has at least MIN_MATCH_COUNT columns from the domain signature.
-    Returns (is_valid, matched_columns, domain_columns).
+    Returns (df, is_valid, matched_cols, domain_cols, lat_col, lon_col, missing_latlon).
+    Requirements: lat+lon present AND >= MIN_MATCH_COUNT domain columns matched.
+    df may be augmented with derived centroid columns.
     """
     domain_cols = DOMAIN_COLUMNS.get(domain, set())
-    # Case-insensitive comparison
     uploaded_upper = {c.upper().strip() for c in df.columns}
     domain_upper   = {c.upper().strip() for c in domain_cols}
     matched = uploaded_upper & domain_upper
-    return len(matched) >= MIN_MATCH_COUNT, matched, domain_cols
+    df, lat_col, lon_col = _find_latlon(df)
+    has_latlon = lat_col is not None and lon_col is not None
+    is_valid = has_latlon and len(matched) >= MIN_MATCH_COUNT
+    return df, is_valid, matched, domain_cols, lat_col, lon_col, not has_latlon
 
+
+# ── Choropleth widget ─────────────────────────────────────────────────────────
+
+def _render_choropleth(df, lat_col, lon_col, domain):
+    """Render a temporary scatter-map colored by a user-selected attribute."""
+    st.markdown("---")
+    st.subheader("Map Visualization")
+    st.caption("This visualization is session-only and will disappear on page refresh.")
+
+    latlon_upper = {lat_col.upper(), lon_col.upper()}
+    numeric_cols = [
+        c for c in df.columns
+        if pd.api.types.is_numeric_dtype(df[c])
+        and c.upper() not in latlon_upper
+    ]
+    if not numeric_cols:
+        st.info("No numeric attributes found to visualize.")
+        return
+
+    attr = st.selectbox(
+        "Select attribute to visualize on map",
+        numeric_cols,
+        key=f"choropleth_attr_{domain}",
+    )
+
+    plot_df = df[[lat_col, lon_col, attr]].dropna()
+    if plot_df.empty:
+        st.warning("No rows with valid lat/lon and attribute values to display.")
+        return
+
+    fig = px.scatter_mapbox(
+        plot_df,
+        lat=lat_col,
+        lon=lon_col,
+        color=attr,
+        color_continuous_scale="Viridis",
+        mapbox_style="open-street-map",
+        zoom=10,
+        center={"lat": plot_df[lat_col].median(), "lon": plot_df[lon_col].median()},
+        opacity=0.6,
+        labels={attr: attr},
+        title=f"{attr} — uploaded dataset",
+    )
+    fig.update_layout(margin={"r": 0, "t": 40, "l": 0, "b": 0})
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ── Public uploader ───────────────────────────────────────────────────────────
 
 def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"):
     """
@@ -131,10 +266,11 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
     st.markdown(f"**{label}**")
     st.caption(
         "Accepted formats: CSV, Parquet, GeoJSON, Shapefile (.shp + .shx + .dbf + companions). "
-        "Uploaded data is session-only and cleared on page refresh."
+        "Uploaded data is session-only and cleared on page refresh. "
+        "Dataset must include latitude & longitude columns and at least "
+        f"{MIN_MATCH_COUNT} recognized domain attributes."
     )
 
-    is_shapefile_upload = False
     uploaded = st.file_uploader(
         label,
         type=ACCEPTED_TYPES,
@@ -155,7 +291,6 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
         elif len(uploaded) == 1:
             df, err = _read_uploaded_file(uploaded[0])
         else:
-            # Multiple non-shapefile files — only accept first, warn about rest
             df, err = _read_uploaded_file(uploaded[0])
             st.warning(
                 f"Multiple files detected. Only `{uploaded[0].name}` was loaded. "
@@ -166,21 +301,38 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
             st.error(err)
             return None, None
 
-        valid, matched, domain_cols = _validate(df, domain)
-        if not valid:
-            st.error(
-                f"This file does not appear to match the **{domain.replace('_', ' ').title()}** domain. "
-                f"Only {len(matched)} recognized column(s) were found — at least {MIN_MATCH_COUNT} are required.\n\n"
-                f"**Matched columns:** {', '.join(sorted(matched)) if matched else 'none'}\n\n"
-                f"**Expected columns include:** {', '.join(sorted(list(domain_cols))[:10])}{'...' if len(domain_cols) > 10 else ''}"
-            )
+        df, is_valid, matched, domain_cols, lat_col, lon_col, missing_latlon = _validate(df, domain)
+
+        if not is_valid:
+            if missing_latlon:
+                st.error(
+                    "This dataset is missing **latitude and longitude** columns. "
+                    "Both are required for upload.\n\n"
+                    "Expected column names include: `latitude`, `longitude`, `lat`, `lon`, `lng`."
+                )
+            else:
+                st.error(
+                    f"This file does not appear to match the **{domain.replace('_', ' ').title()}** domain. "
+                    f"Only {len(matched)} recognized column(s) were found — at least {MIN_MATCH_COUNT} are required.\n\n"
+                    f"**Matched columns:** {', '.join(sorted(matched)) if matched else 'none'}\n\n"
+                    f"**Expected columns include:** {', '.join(sorted(list(domain_cols))[:10])}{'...' if len(domain_cols) > 10 else ''}"
+                )
             return None, None
 
+        derived = lat_col == "_latitude"
+        latlon_note = (
+            "Lat/lon derived from bounding box (NORTH/SOUTH/EAST/WEST centroids)."
+            if derived else
+            f"Lat/lon: `{lat_col}` / `{lon_col}`."
+        )
         st.success(
-            f"File loaded successfully — {len(df):,} rows, {len(df.columns)} columns. "
-            f"Matched {len(matched)} domain column(s)."
+            f"File loaded — {len(df):,} rows, {len(df.columns)} columns. "
+            f"Matched {len(matched)} domain column(s). {latlon_note}"
         )
         source = "upload"
+
+        _render_choropleth(df, lat_col, lon_col, domain)
+
         return df, source
 
     # No upload — fall back to local file if available
@@ -195,7 +347,8 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
     # Nothing available
     domain_cols = DOMAIN_COLUMNS.get(domain, set())
     st.info(
-        "No data loaded yet. Upload a file above, or place the default dataset in the working directory.\n\n"
-        f"**This tab recognizes columns such as:** {', '.join(sorted(list(domain_cols))[:12])}{'...' if len(domain_cols) > 12 else ''}"
+        "No data loaded yet. Upload a file above.\n\n"
+        f"**Requirements:** latitude & longitude columns + at least {MIN_MATCH_COUNT} of these domain columns: "
+        f"{', '.join(sorted(list(domain_cols))[:12])}{'...' if len(domain_cols) > 12 else ''}"
     )
     return None, None
