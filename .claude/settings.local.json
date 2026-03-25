@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E '\\\\.\\(ipynb|py|csv|json|yml|yaml|md\\)$')",
+      "Bash(grep -r \"Socrata\\\\|socrata\\\\|85ca-t3if\\\\|v6vf-nfxy\\\\|ydr8-5enu\\\\|kn9c-c2s2\" /c/Users/shanm/Documents/SIG-AIDA/Pathway-To-Improved-Cities --include=*.py --include=*.md --include=*.ipynb)",
+      "Bash(xargs ls:*)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, ''src''\\); import data_fetcher; print\\(''Import OK''\\); print\\(''CRIME_OUT:'', data_fetcher.CRIME_OUT\\); print\\(''CRASH_OUT:'', data_fetcher.CRASH_OUT\\)\")"
+    ]
+  }
+}

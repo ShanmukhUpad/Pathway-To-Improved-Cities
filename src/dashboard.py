@@ -5,6 +5,7 @@ import plotly.express as px
 import crash
 import file_loader
 import public_safety
+import data_fetcher
 
 st.set_page_config(
     page_title="Pathway to Improved Cities",
@@ -12,6 +13,33 @@ st.set_page_config(
 )
 
 st.title("Pathway to Improved Cities Dashboard")
+
+# ──────────────────────────────────────────────
+# Sidebar: live data refresh
+# ──────────────────────────────────────────────
+
+with st.sidebar:
+    st.header("Data")
+
+    st.markdown(
+        f"**Crime data** — last updated: `{data_fetcher.last_updated(data_fetcher.CRIME_OUT)}`\n\n"
+        f"**Crash data** — last updated: `{data_fetcher.last_updated(data_fetcher.CRASH_OUT)}`"
+    )
+
+    if st.button("Refresh from Chicago Data Portal", use_container_width=True):
+        with st.spinner("Fetching latest data…"):
+            try:
+                data_fetcher.refresh_all(force=True)
+                st.cache_data.clear()
+                st.success("Data refreshed!")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Refresh failed: {exc}")
+
+    st.caption(
+        "Data source: [Chicago Data Portal](https://data.cityofchicago.org)  \n"
+        "Set `CHICAGO_DATA_PORTAL_TOKEN` env var for higher rate limits."
+    )
 
 
 # ──────────────────────────────────────────────

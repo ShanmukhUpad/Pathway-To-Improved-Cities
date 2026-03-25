@@ -5,7 +5,19 @@ import plotly.graph_objects as go
 import os
 import file_loader
 
-CRASH_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Traffic_Crashes_-_Crashes_20260309.csv")
+_SRC = os.path.dirname(os.path.abspath(__file__))
+# Prefer the auto-fetched file; fall back to the bundled snapshot
+CRASH_CSV_LATEST = os.path.join(_SRC, "traffic_crashes_latest.csv")
+CRASH_CSV_LEGACY = os.path.join(_SRC, "Traffic_Crashes_-_Crashes_20260309.csv")
+
+
+def _resolve_crash_csv() -> str | None:
+    """Return the best available crash CSV path, or None if neither exists."""
+    if os.path.exists(CRASH_CSV_LATEST):
+        return CRASH_CSV_LATEST
+    if os.path.exists(CRASH_CSV_LEGACY):
+        return CRASH_CSV_LEGACY
+    return None
 
 DAY_LABELS = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
 MONTH_LABELS = {
@@ -19,7 +31,10 @@ MONTH_LABELS = {
 
 @st.cache_data(show_spinner="Loading crash data...")
 def load_crash_data():
-    df = pd.read_csv(CRASH_CSV, low_memory=False)
+    path = _resolve_crash_csv()
+    if path is None:
+        raise FileNotFoundError("No crash CSV found.")
+    df = pd.read_csv(path, low_memory=False)
 
     # Parse date and extract time fields (notebook cell 4)
     df['CRASH_DATE'] = pd.to_datetime(df['CRASH_DATE'], infer_datetime_format=True)
@@ -162,13 +177,20 @@ def render(chicago_geo=None):
         try:
             df1, df2 = load_crash_data()
         except FileNotFoundError:
-            st.info(
-                f"`{CRASH_CSV}` not found. Place the file in the working directory, "
-                "or upload a dataset using the expander above.\n\n"
-                "Download from the "
-                "[Chicago Data Portal — Traffic Crashes]"
-                "(https://data.cityofchicago.org/Transportation/Traffic-Crashes-Crashes/85ca-t3if)."
-            )
+            st.info("No local crash data found. Fetching the latest data from the Chicago Data Portal…")
+            try:
+                import data_fetcher
+                data_fetcher.fetch_crashes(force=True)
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as exc:
+                st.error(
+                    f"Auto-fetch failed: {exc}\n\n"
+                    "You can also download the file manually from the "
+                    "[Chicago Data Portal — Traffic Crashes]"
+                    "(https://data.cityofchicago.org/Transportation/Traffic-Crashes-Crashes/85ca-t3if) "
+                    "and place it in the `src/` folder."
+                )
             return
 
     # ── Section 1: Temporal patterns ────────────────────────────────────

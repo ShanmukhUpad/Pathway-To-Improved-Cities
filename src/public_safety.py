@@ -35,7 +35,14 @@ def render(chicago_geo, area_map):
         file_loader.uploader(domain="public_safety", local_csv=None, label="Upload a public safety dataset")
 
     if not os.path.exists(CRIME_CSV):
-        st.error(f"`crime_monthly_pivot.csv` not found. Place it in the `src/` folder.")
+        st.info("No local crime data found. Fetching the latest data from the Chicago Data Portal…")
+        try:
+            import data_fetcher
+            data_fetcher.fetch_crimes(force=True)
+            st.cache_data.clear()
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Auto-fetch failed: {exc}")
         return
 
     pivot = _load_crime_data(area_map)
