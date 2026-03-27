@@ -1,11 +1,3 @@
-"""
-public_safety.py
-----------------
-Renders the Public Safety tab for the Pathway to Improved Cities dashboard.
-Loads crime_monthly_pivot.csv, applies lag features, and visualizes
-historical trends, forecasts, and choropleth maps by community area.
-"""
-
 import os
 import streamlit as st
 import pandas as pd

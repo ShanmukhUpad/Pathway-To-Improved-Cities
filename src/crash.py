@@ -37,7 +37,7 @@ def load_crash_data():
     df = pd.read_csv(path, low_memory=False)
 
     # Parse date and extract time fields (notebook cell 4)
-    df['CRASH_DATE'] = pd.to_datetime(df['CRASH_DATE'], infer_datetime_format=True)
+    df['CRASH_DATE'] = pd.to_datetime(df['CRASH_DATE'])
     df['CRASH_HOUR']        = df['CRASH_DATE'].dt.hour
     df['CRASH_DAY_OF_WEEK'] = df['CRASH_DATE'].dt.dayofweek   # 0=Monday, 6=Sunday
     df['CRASH_MONTH']       = df['CRASH_DATE'].dt.month
@@ -110,7 +110,7 @@ def load_crash_data():
 def _split_and_clean(df):
     """Same cleaning as load_crash_data() but accepts a raw DataFrame directly."""
     df = df.copy()
-    df['CRASH_DATE'] = pd.to_datetime(df['CRASH_DATE'], infer_datetime_format=True)
+    df['CRASH_DATE'] = pd.to_datetime(df['CRASH_DATE'])
     df['CRASH_HOUR']        = df['CRASH_DATE'].dt.hour
     df['CRASH_DAY_OF_WEEK'] = df['CRASH_DATE'].dt.dayofweek
     df['CRASH_MONTH']       = df['CRASH_DATE'].dt.month

@@ -1,6 +1,7 @@
 import io
 import tempfile
 import os
+import requests
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -198,15 +199,50 @@ def _validate(df, domain):
     return df, is_valid, matched, domain_cols, lat_col, lon_col, not has_latlon
 
 
+# ── Community-area choropleth helpers ─────────────────────────────────────────
+
+# Column names (upper-cased) that identify Chicago community area numbers
+_CA_NUMBER_ALIASES = {
+    "COMMUNITY_AREA_NUMBER", "COMMUNITY AREA NUMBER",
+    "COMMUNITY_AREA", "COMAREA", "AREA_NUMBE",
+}
+
+def _find_ca_number_col(df):
+    """Return the first column whose upper-stripped name is a known CA-number alias."""
+    upper_map = {c.upper().strip(): c for c in df.columns}
+    for alias in _CA_NUMBER_ALIASES:
+        if alias in upper_map:
+            return upper_map[alias]
+    return None
+
+
+@st.cache_data(show_spinner="Loading Chicago community area boundaries…")
+def _load_community_areas_geojson():
+    """
+    Fetch Chicago community area polygon boundaries from the Chicago Data Portal.
+    Result is cached for the Streamlit session so it is only downloaded once.
+    """
+    url = "https://data.cityofchicago.org/resource/igwz-8jzy.geojson"
+    resp = requests.get(url, params={"$limit": 100}, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
 # ── Choropleth widget ─────────────────────────────────────────────────────────
 
 def _render_choropleth(df, lat_col, lon_col, domain):
-    """Render a temporary scatter-map colored by a user-selected attribute."""
+    """
+    Render a map visualization for the uploaded dataset.
+
+    If the data contains a community-area-number column, draws a proper
+    choropleth using Chicago community area polygons.  Otherwise falls back
+    to a scatter map.
+    """
     st.markdown("---")
     st.subheader("Map Visualization")
     st.caption("This visualization is session-only and will disappear on page refresh.")
 
-    latlon_upper = {lat_col.upper(), lon_col.upper()}
+    latlon_upper = {lat_col.upper(), lon_col.upper()} if lat_col and lon_col else set()
     numeric_cols = [
         c for c in df.columns
         if pd.api.types.is_numeric_dtype(df[c])
@@ -221,6 +257,53 @@ def _render_choropleth(df, lat_col, lon_col, domain):
         numeric_cols,
         key=f"choropleth_attr_{domain}",
     )
+
+    # ── Try community-area choropleth first ───────────────────────────────────
+    ca_col = _find_ca_number_col(df)
+    if ca_col:
+        try:
+            geojson = _load_community_areas_geojson()
+
+            plot_df = df[[ca_col, attr]].dropna().copy()
+            # Normalise to plain integer string so it matches GeoJSON "area_numbe"
+            plot_df[ca_col] = (
+                pd.to_numeric(plot_df[ca_col], errors="coerce")
+                .dropna()
+                .astype(int)
+                .astype(str)
+            )
+            # Aggregate rows that share the same community area (e.g. multiple
+            # census tracts) by taking the mean so the choropleth has one value
+            # per polygon.
+            plot_df = plot_df.groupby(ca_col, as_index=False)[attr].mean()
+
+            fig = px.choropleth_mapbox(
+                plot_df,
+                geojson=geojson,
+                locations=ca_col,
+                featureidkey="properties.area_numbe",
+                color=attr,
+                color_continuous_scale="Viridis",
+                mapbox_style="open-street-map",
+                zoom=8.5,
+                center={"lat": 41.8358, "lon": -87.6877},
+                opacity=0.7,
+                labels={attr: attr},
+                title=f"{attr} — uploaded dataset",
+            )
+            fig.update_layout(margin={"r": 0, "t": 40, "l": 0, "b": 0})
+            st.plotly_chart(fig, use_container_width=True)
+            return
+        except Exception as exc:
+            st.warning(
+                f"Community-area choropleth could not be rendered ({exc}). "
+                "Falling back to scatter map."
+            )
+
+    # ── Fallback: scatter map ─────────────────────────────────────────────────
+    if not lat_col or not lon_col:
+        st.info("No lat/lon columns found — cannot render a scatter map.")
+        return
 
     plot_df = df[[lat_col, lon_col, attr]].dropna()
     if plot_df.empty:
