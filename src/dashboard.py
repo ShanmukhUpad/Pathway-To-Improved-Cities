@@ -5,6 +5,7 @@ import plotly.express as px
 import crash
 import file_loader
 import public_safety
+import socieoeconomic
 import data_fetcher
 
 st.set_page_config(
@@ -141,88 +142,5 @@ with tab_infra:
 # ══════════════════════════════════════════════
 
 with tab_socio:
-    st.header("Socioeconomics & Diversity Dashboard")
-    st.markdown(
-        "Explore income, poverty, racial demographics, educational attainment, and hardship indices across community areas."
-    )
-
-    with st.expander("Upload a supplemental dataset"):
-        file_loader.uploader(domain="socioeconomics", local_csv=None, label="Upload a socioeconomics dataset")
-
-    @st.cache_data
-    def load_socio_data():
-        # Expected columns: Community Area, Year (or static), demographic/economic metrics
-        return pd.read_csv("socioeconomics.csv")
-
-    try:
-        socio_df = load_socio_data()
-        socio_df['Community Area Name'] = socio_df['Community Area'].map(area_map)
-
-        socio_metric_cols = [
-            c for c in socio_df.columns
-            if c not in ['Community Area', 'Year', 'Community Area Name']
-        ]
-
-        s_metric = st.selectbox("Select Indicator", socio_metric_cols, key="socio_metric")
-
-        col1, col2 = st.columns([2, 1])
-
-        with col1:
-            st.subheader(f"{s_metric} by Community Area")
-            s_map_data = socio_df[['Community Area Name', s_metric]].dropna()
-            fig_s = px.choropleth_mapbox(
-                s_map_data, geojson=chicago_geo,
-                locations='Community Area Name', featureidkey="properties.community",
-                color=s_metric, color_continuous_scale="Purples",
-                mapbox_style="open-street-map", zoom=9,
-                center={"lat": 41.8781, "lon": -87.6298}, opacity=0.6,
-                labels={s_metric: s_metric}
-            )
-            st.plotly_chart(fig_s, use_container_width=True)
-
-        with col2:
-            st.subheader(f"Top 10 — {s_metric}")
-            top10 = (
-                socio_df[['Community Area Name', s_metric]]
-                .dropna()
-                .sort_values(s_metric, ascending=False)
-                .head(10)
-            )
-            fig_bar = px.bar(
-                top10, x=s_metric, y='Community Area Name',
-                orientation='h', color=s_metric,
-                color_continuous_scale='Purples'
-            )
-            fig_bar.update_layout(yaxis={'categoryorder': 'total ascending'}, showlegend=False)
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-        st.subheader("Correlation Explorer")
-        if len(socio_metric_cols) >= 2:
-            col_x, col_y = st.columns(2)
-            with col_x:
-                x_var = st.selectbox("X-axis variable", socio_metric_cols, key="socio_x")
-            with col_y:
-                y_var = st.selectbox("Y-axis variable", socio_metric_cols,
-                                     index=min(1, len(socio_metric_cols) - 1), key="socio_y")
-
-            fig_scatter = px.scatter(
-                socio_df, x=x_var, y=y_var,
-                hover_name='Community Area Name',
-                trendline='ols',
-                color=y_var, color_continuous_scale='Purples',
-                labels={x_var: x_var, y_var: y_var}
-            )
-            st.plotly_chart(fig_scatter, use_container_width=True)
-        else:
-            st.info("Add more columns to enable correlation analysis.")
-
-    except FileNotFoundError:
-        st.info(
-            "No socioeconomic dataset loaded yet.\n\n"
-            "**To connect data:** Place a file named `socioeconomics.csv` in the working directory.\n\n"
-            "**Suggested datasets:**\n"
-            "- [Census Community Area Profiles](https://data.cityofchicago.org/Health-Human-Services/Census-Data-Selected-socioeconomic-indicators-in-C/kn9c-c2s2)\n"
-            "- [Chicago Health Atlas](https://www.chicagohealthatlas.org/)\n"
-            "- [ACS 5-Year Estimates via Census API](https://www.census.gov/data/developers/data-sets/acs-5year.html)\n\n"
-            "**Expected CSV columns:** `Community Area`, + indicator columns (e.g. `Poverty Rate`, `Median Income`, `% Black`, `% Hispanic`, `Hardship Index`)"
-        )
+    socieoeconomic.render()
+    

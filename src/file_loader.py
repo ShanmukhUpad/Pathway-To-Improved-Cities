@@ -72,10 +72,9 @@ DOMAIN_COLUMNS = {
         "PRIORITY", "DEPARTMENT",
     },
     "socioeconomics": {
-        "Community Area",
-        # Hardship / poverty
-        "PERCENT OF HOUSING CROWDED", "PERCENT HOUSEHOLDS BELOW POVERTY",
-        "PERCENT AGED 16+ UNEMPLOYED", "PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA",
+        "community_area", "community_name",
+        "percent_poverty", "PERCENT AGED 16+ UNEMPLOYED",
+        "PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA",
         "PERCENT AGED UNDER 18 OR OVER 64", "PER CAPITA INCOME",
         "HARDSHIP INDEX", "Median Income", "Poverty Rate", "BELOW_POVERTY_LINE",
         # Demographics
