@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import os
 import file_loader
+import ml_predictor
 
 _SRC = os.path.dirname(os.path.abspath(__file__))
 # Prefer the auto-fetched file; fall back to the bundled snapshot
@@ -401,3 +402,17 @@ def render(chicago_geo=None):
         )
         fig_units.update_layout(coloraxis_showscale=False)
         st.plotly_chart(fig_units, use_container_width=True)
+
+    # ── Section 7: ML Predictions ─────────────────────────────────────────────
+    _CRASH_DEFAULT_FEATURES = [
+        'WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND',
+        'POSTED_SPEED_LIMIT', 'TRAFFICWAY_TYPE', 'INTERSECTION_RELATED_I',
+        'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'NUM_UNITS', 'HIT_AND_RUN_I',
+        'FIRST_CRASH_TYPE', 'CRASH_TYPE',
+    ]
+    ml_predictor.render_predictor(
+        df2,
+        key_prefix="crash",
+        default_target="DAMAGE",
+        default_features=_CRASH_DEFAULT_FEATURES,
+    )
