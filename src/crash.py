@@ -166,33 +166,30 @@ def render(chicago_geo=None):
     )
 
     with st.expander("Upload a supplemental dataset"):
-        uploaded_df, _ = file_loader.uploader(
+        file_loader.uploader(
             domain="transportation",
             local_csv=None,
             label="Upload a crash dataset"
         )
 
-    if uploaded_df is not None:
-        df1, df2 = _split_and_clean(uploaded_df)
-    else:
+    try:
+        df1, df2 = load_crash_data()
+    except FileNotFoundError:
+        st.info("No local crash data found. Fetching the latest data from the Chicago Data Portal…")
         try:
-            df1, df2 = load_crash_data()
-        except FileNotFoundError:
-            st.info("No local crash data found. Fetching the latest data from the Chicago Data Portal…")
-            try:
-                import data_fetcher
-                data_fetcher.fetch_crashes(force=True)
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as exc:
-                st.error(
-                    f"Auto-fetch failed: {exc}\n\n"
-                    "You can also download the file manually from the "
-                    "[Chicago Data Portal — Traffic Crashes]"
-                    "(https://data.cityofchicago.org/Transportation/Traffic-Crashes-Crashes/85ca-t3if) "
-                    "and place it in the `src/` folder."
-                )
-            return
+            import data_fetcher
+            data_fetcher.fetch_crashes(force=True)
+            st.cache_data.clear()
+            st.rerun()
+        except Exception as exc:
+            st.error(
+                f"Auto-fetch failed: {exc}\n\n"
+                "You can also download the file manually from the "
+                "[Chicago Data Portal — Traffic Crashes]"
+                "(https://data.cityofchicago.org/Transportation/Traffic-Crashes-Crashes/85ca-t3if) "
+                "and place it in the `src/` folder."
+            )
+        return
 
     # ── Section 1: Temporal patterns ────────────────────────────────────
     st.subheader("Crash Timing")
@@ -235,6 +232,17 @@ def render(chicago_geo=None):
         fig_m.update_layout(coloraxis_showscale=False)
         st.plotly_chart(fig_m, use_container_width=True)
 
+    # ── Timing summary ───────────────────────────────────────────────────────
+    peak_hour = hourly.loc[hourly["Crashes"].idxmax(), "CRASH_HOUR"]
+    peak_day  = daily.loc[daily["Crashes"].idxmax(), "Day"]
+    peak_month= monthly.loc[monthly["Crashes"].idxmax(), "Month"]
+    st.info(
+        f"**When crashes happen most:** Peak hour is **{peak_hour}:00** "
+        f"({'evening rush' if 15 <= peak_hour <= 19 else 'morning rush' if 6 <= peak_hour <= 9 else 'overnight' if peak_hour < 6 else 'midday'}), "
+        f"peak day is **{peak_day}**, and peak month is **{peak_month}**. "
+        "Targeted enforcement and road safety campaigns during these windows could meaningfully reduce crash frequency."
+    )
+
     st.divider()
 
     # ── Section 2: Road & environment conditions ─────────────────────────
@@ -269,6 +277,17 @@ def render(chicago_geo=None):
     )
     st.plotly_chart(fig_cond, use_container_width=True)
 
+    top_cond       = cond_counts.iloc[0][selected_condition]
+    top_cond_count = cond_counts.iloc[0]["Crashes"]
+    total_crashes  = cond_counts["Crashes"].sum()
+    top_cond_pct   = top_cond_count / total_crashes * 100
+    st.info(
+        f"**{selected_condition} insight:** **{top_cond}** accounts for "
+        f"**{top_cond_pct:.1f}% of all crashes** ({top_cond_count:,} incidents). "
+        "This is the highest-risk condition category. Infrastructure improvements or signage "
+        "targeting this condition would have the greatest safety impact."
+    )
+
     st.divider()
 
     # ── Section 3: Crash type breakdown ─────────────────────────────────
@@ -302,6 +321,13 @@ def render(chicago_geo=None):
             coloraxis_showscale=False
         )
         st.plotly_chart(fig_tw, use_container_width=True)
+
+    top_crash_type = ct_counts.iloc[0]["Crash Type"]
+    top_crash_pct  = ct_counts.iloc[0]["Count"] / ct_counts["Count"].sum() * 100
+    st.info(
+        f"**Most common crash type: {top_crash_type}** ({top_crash_pct:.1f}% of crashes). "
+        "Understanding dominant crash types informs the design of intersections, signage, and driver education programs."
+    )
 
     st.divider()
 
@@ -341,6 +367,16 @@ def render(chicago_geo=None):
             color_discrete_sequence=['#fd8d3c', '#fdbe85']
         )
         st.plotly_chart(fig_hr, use_container_width=True)
+
+    over_1500_pct = dmg_counts.loc[dmg_counts["Damage Level"] == "OVER $1,500", "Crashes"].sum() / dmg_counts["Crashes"].sum() * 100
+    hr_pct        = df2["HIT_AND_RUN_I"].str.upper().str.strip().eq("Y").mean() * 100
+    st.info(
+        f"**Damage & hit-and-run:** {over_1500_pct:.1f}% of crashes result in damage over $1,500, "
+        f"and **{hr_pct:.1f}% are hit-and-run** incidents. "
+        + ("A high hit-and-run rate points to enforcement gaps. Increased camera coverage or penalties may deter this behavior."
+           if hr_pct > 15 else
+           "Hit-and-run rates are within a typical range, but continued monitoring is recommended.")
+    )
 
     st.divider()
 

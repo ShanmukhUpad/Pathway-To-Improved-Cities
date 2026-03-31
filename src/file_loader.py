@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import geopandas as gpd
+import ml_predictor
 
 MIN_MATCH_COUNT = 4  # require at least 4 domain columns + lat/lon
 
@@ -227,25 +228,93 @@ def _load_community_areas_geojson():
     return resp.json()
 
 
-# ── Choropleth widget ─────────────────────────────────────────────────────────
+# ── Name-column detection ─────────────────────────────────────────────────────
 
-def _render_choropleth(df, lat_col, lon_col, domain):
+_NAME_ALIASES = {
+    "NAME", "COMMUNITY", "COMMUNITY AREA NAME", "COMMUNITY_AREA_NAME",
+    "NEIGHBORHOOD", "AREA_NAME", "WARD_NAME", "LOCATION", "STREET_NAME",
+    "ADDRESS", "LABEL", "TITLE", "DESCRIPTION",
+}
+
+def _find_name_col(df):
+    """Return the first likely label/name column, or None."""
+    upper_map = {c.upper().strip(): c for c in df.columns}
+    for alias in _NAME_ALIASES:
+        if alias in upper_map:
+            return upper_map[alias]
+    # Fall back to the first object column
+    for c in df.columns:
+        if df[c].dtype == object:
+            return c
+    return None
+
+
+# ── Choropleth / scatter map ──────────────────────────────────────────────────
+
+def _render_map(df, lat_col, lon_col, attr, domain):
+    """Render a choropleth (if CA column found) or scatter map."""
+    ca_col = _find_ca_number_col(df)
+    if ca_col:
+        try:
+            geojson = _load_community_areas_geojson()
+            plot_df = df[[ca_col, attr]].dropna().copy()
+            plot_df[ca_col] = (
+                pd.to_numeric(plot_df[ca_col], errors="coerce")
+                .dropna().astype(int).astype(str)
+            )
+            plot_df = plot_df.groupby(ca_col, as_index=False)[attr].mean()
+            fig = px.choropleth_mapbox(
+                plot_df, geojson=geojson, locations=ca_col,
+                featureidkey="properties.area_numbe",
+                color=attr, color_continuous_scale="Viridis",
+                mapbox_style="open-street-map", zoom=8.5,
+                center={"lat": 41.8358, "lon": -87.6877}, opacity=0.7,
+                labels={attr: attr}, title=f"{attr} - uploaded dataset",
+            )
+            fig.update_layout(margin={"r": 0, "t": 40, "l": 0, "b": 0})
+            st.plotly_chart(fig, use_container_width=True)
+            return
+        except Exception as exc:
+            st.warning(f"Choropleth failed ({exc}). Falling back to scatter map.")
+
+    if not lat_col or not lon_col:
+        st.info("No lat/lon columns found. Cannot render a map.")
+        return
+
+    plot_df = df[[lat_col, lon_col, attr]].dropna()
+    if plot_df.empty:
+        st.warning("No rows with valid lat/lon and attribute values.")
+        return
+
+    fig = px.scatter_mapbox(
+        plot_df, lat=lat_col, lon=lon_col, color=attr,
+        color_continuous_scale="Viridis", mapbox_style="open-street-map",
+        zoom=10, center={"lat": plot_df[lat_col].median(), "lon": plot_df[lon_col].median()},
+        opacity=0.6, labels={attr: attr}, title=f"{attr} - uploaded dataset",
+    )
+    fig.update_layout(margin={"r": 0, "t": 40, "l": 0, "b": 0})
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ── Full upload analysis pipeline ─────────────────────────────────────────────
+
+def _render_upload_analysis(df, lat_col, lon_col, domain):
     """
-    Render a map visualization for the uploaded dataset.
-
-    If the data contains a community-area-number column, draws a proper
-    choropleth using Chicago community area polygons.  Otherwise falls back
-    to a scatter map.
+    Unified analysis suite rendered for any uploaded dataset regardless of tab:
+      1. Map (choropleth or scatter)
+      2. Distribution chart + statistics
+      3. Dynamic summary insight
+      4. Top / bottom 5 rows by selected attribute
+      5. ML predictor
     """
     st.markdown("---")
-    st.subheader("Map Visualization")
-    st.caption("This visualization is session-only and will disappear on page refresh.")
+    st.subheader("Uploaded Dataset Analysis")
+    st.caption("Session-only and will be cleared on page refresh.")
 
     latlon_upper = {lat_col.upper(), lon_col.upper()} if lat_col and lon_col else set()
     numeric_cols = [
         c for c in df.columns
-        if pd.api.types.is_numeric_dtype(df[c])
-        and c.upper() not in latlon_upper
+        if pd.api.types.is_numeric_dtype(df[c]) and c.upper() not in latlon_upper
     ]
     if not numeric_cols:
         st.info("No numeric attributes found to visualize.")
@@ -254,76 +323,91 @@ def _render_choropleth(df, lat_col, lon_col, domain):
     attr = st.selectbox(
         "Select attribute to visualize on map",
         numeric_cols,
-        key=f"choropleth_attr_{domain}",
+        key=f"upload_attr_{domain}",
     )
 
-    # ── Try community-area choropleth first ───────────────────────────────────
-    ca_col = _find_ca_number_col(df)
-    if ca_col:
-        try:
-            geojson = _load_community_areas_geojson()
+    # ── 1. Map ────────────────────────────────────────────────────────────────
+    _render_map(df, lat_col, lon_col, attr, domain)
 
-            plot_df = df[[ca_col, attr]].dropna().copy()
-            # Normalise to plain integer string so it matches GeoJSON "area_numbe"
-            plot_df[ca_col] = (
-                pd.to_numeric(plot_df[ca_col], errors="coerce")
-                .dropna()
-                .astype(int)
-                .astype(str)
-            )
-            # Aggregate rows that share the same community area (e.g. multiple
-            # census tracts) by taking the mean so the choropleth has one value
-            # per polygon.
-            plot_df = plot_df.groupby(ca_col, as_index=False)[attr].mean()
+    st.divider()
 
-            fig = px.choropleth_mapbox(
-                plot_df,
-                geojson=geojson,
-                locations=ca_col,
-                featureidkey="properties.area_numbe",
-                color=attr,
-                color_continuous_scale="Viridis",
-                mapbox_style="open-street-map",
-                zoom=8.5,
-                center={"lat": 41.8358, "lon": -87.6877},
-                opacity=0.7,
-                labels={attr: attr},
-                title=f"{attr} — uploaded dataset",
-            )
-            fig.update_layout(margin={"r": 0, "t": 40, "l": 0, "b": 0})
-            st.plotly_chart(fig, use_container_width=True)
-            return
-        except Exception as exc:
-            st.warning(
-                f"Community-area choropleth could not be rendered ({exc}). "
-                "Falling back to scatter map."
-            )
+    # ── 2. Distribution + statistics ─────────────────────────────────────────
+    st.subheader(f"Distribution of {attr}")
+    series = df[attr].dropna()
+    mean_val   = series.mean()
+    median_val = series.median()
+    std_val    = series.std()
+    min_val    = series.min()
+    max_val    = series.max()
+    skew_val   = series.skew()
 
-    # ── Fallback: scatter map ─────────────────────────────────────────────────
-    if not lat_col or not lon_col:
-        st.info("No lat/lon columns found — cannot render a scatter map.")
-        return
+    col_hist, col_stats = st.columns([3, 1])
+    with col_hist:
+        fig_hist = px.histogram(
+            df, x=attr, nbins=30,
+            title=f"Distribution of {attr}",
+            color_discrete_sequence=["#4f8ef7"],
+        )
+        fig_hist.update_layout(margin={"t": 30})
+        st.plotly_chart(fig_hist, use_container_width=True)
 
-    plot_df = df[[lat_col, lon_col, attr]].dropna()
-    if plot_df.empty:
-        st.warning("No rows with valid lat/lon and attribute values to display.")
-        return
+    with col_stats:
+        st.metric("Mean",    f"{mean_val:.2f}")
+        st.metric("Median",  f"{median_val:.2f}")
+        st.metric("Std Dev", f"{std_val:.2f}")
+        c1, c2 = st.columns(2)
+        c1.metric("Min", f"{min_val:.2f}")
+        c2.metric("Max", f"{max_val:.2f}")
 
-    fig = px.scatter_mapbox(
-        plot_df,
-        lat=lat_col,
-        lon=lon_col,
-        color=attr,
-        color_continuous_scale="Viridis",
-        mapbox_style="open-street-map",
-        zoom=10,
-        center={"lat": plot_df[lat_col].median(), "lon": plot_df[lon_col].median()},
-        opacity=0.6,
-        labels={attr: attr},
-        title=f"{attr} — uploaded dataset",
+    # ── 3. Summary insight ────────────────────────────────────────────────────
+    skew_label = (
+        "right-skewed (a long tail of high values)"
+        if skew_val > 0.5 else
+        ("left-skewed (a long tail of low values)" if skew_val < -0.5 else "approximately symmetric")
     )
-    fig.update_layout(margin={"r": 0, "t": 40, "l": 0, "b": 0})
-    st.plotly_chart(fig, use_container_width=True)
+    cv = std_val / abs(mean_val) if mean_val != 0 else 0
+    variability = (
+        "High variability across records suggests significant inequality or heterogeneity in this attribute."
+        if cv > 0.5 else
+        "Values are relatively consistent across records."
+    )
+    mean_vs_median = ""
+    if abs(mean_val - median_val) / (std_val if std_val > 0 else 1) > 0.3:
+        mean_vs_median = (
+            f" The mean ({mean_val:.2f}) is pulled above the median ({median_val:.2f}) by high outliers."
+            if mean_val > median_val else
+            f" The mean ({mean_val:.2f}) is pulled below the median ({median_val:.2f}) by low outliers."
+        )
+    st.info(
+        f"**{attr} summary:** The average value is **{mean_val:.2f}** and the median is **{median_val:.2f}**."
+        f"{mean_vs_median} "
+        f"The distribution is {skew_label}. {variability}"
+    )
+
+    # ── 4. Top / bottom 5 ─────────────────────────────────────────────────────
+    name_col = _find_name_col(df)
+    display_cols = [name_col, attr] if name_col else [attr]
+    col_top, col_bot = st.columns(2)
+    with col_top:
+        st.markdown(f"**Top 5 by {attr}**")
+        st.dataframe(
+            df.nlargest(5, attr)[display_cols].reset_index(drop=True),
+            use_container_width=True,
+        )
+    with col_bot:
+        st.markdown(f"**Bottom 5 by {attr}**")
+        st.dataframe(
+            df.nsmallest(5, attr)[display_cols].reset_index(drop=True),
+            use_container_width=True,
+        )
+
+    # ── 5. ML predictor ───────────────────────────────────────────────────────
+    ml_predictor.render_predictor(
+        df,
+        key_prefix=f"upload_{domain}",
+        default_target=attr,
+        default_features=numeric_cols[:min(8, len(numeric_cols))],
+    )
 
 
 # ── Public uploader ───────────────────────────────────────────────────────────
@@ -413,7 +497,7 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
         )
         source = "upload"
 
-        _render_choropleth(df, lat_col, lon_col, domain)
+        _render_upload_analysis(df, lat_col, lon_col, domain)
 
         return df, source
 

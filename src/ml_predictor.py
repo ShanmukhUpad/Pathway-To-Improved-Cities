@@ -150,12 +150,33 @@ def render_predictor(
         col_m1.metric("Test Accuracy", f"{acc:.1%}")
         col_m2.metric("Training rows", f"{len(X_train):,}")
         col_m3.metric("Classes", str(len(target_encoder.classes_)))
+        acc_label = "strong" if acc >= 0.8 else ("moderate" if acc >= 0.6 else "weak")
+        st.info(
+            f"**Model performance:** A test accuracy of **{acc:.1%}** means the model correctly predicts "
+            f"**`{target}`** for {acc:.0%} of unseen records, a **{acc_label}** result. "
+            + ("The model is reliable for decision-making."
+               if acc >= 0.8 else
+               ("Predictions are directionally useful but carry meaningful uncertainty. Cross-check with domain knowledge."
+                if acc >= 0.6 else
+                "The model struggles with this target. Consider adding more informative features or reviewing data quality."))
+        )
     else:
         rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
         r2 = float(r2_score(y_test, y_pred))
         col_m1.metric("RMSE", f"{rmse:.4f}")
         col_m2.metric("R²", f"{r2:.4f}")
         col_m3.metric("Training rows", f"{len(X_train):,}")
+        r2_label = "strong" if r2 >= 0.1 else ("weak" if r2 > 0 else "no correlation")
+        st.info(
+            f"**Model performance:** An R² of **{r2:.4f}** means the selected features explain "
+            f"**{r2*100:.1f}% of the variation** in `{target}`, a **{r2_label}** fit. "
+            f"An RMSE of **{rmse:.4f}** means predictions are typically off by plus or minus {rmse:.4f} units on average. "
+            + ("The model captures the pattern well and forecasts are reliable."
+               if r2 >= 0.1 else
+               ("The model shows a weak relationship. Treat predictions as directional guidance."
+                if r2 > 0 else
+                "The model shows no explanatory power. Consider adding stronger predictor features."))
+        )
 
     # ── Feature importance ────────────────────────────────────────────────────
     imp_df = (
@@ -176,6 +197,20 @@ def render_predictor(
         yaxis={"categoryorder": "total ascending"}, coloraxis_showscale=False
     )
     st.plotly_chart(fig_imp, use_container_width=True)
+
+    top_feature     = imp_df.iloc[0]["Feature"]
+    top_importance  = imp_df.iloc[0]["Importance"]
+    second_feature  = imp_df.iloc[1]["Feature"] if len(imp_df) > 1 else None
+    second_imp      = imp_df.iloc[1]["Importance"] if len(imp_df) > 1 else 0
+    top_two_pct     = (top_importance + second_imp) * 100
+    st.info(
+        f"**Feature importance insight:** **`{top_feature}`** is the strongest predictor of `{target}` "
+        f"(importance score: {top_importance:.3f})"
+        + (f", followed by **`{second_feature}`** ({second_imp:.3f}). "
+           f"Together they account for **{top_two_pct:.1f}%** of the model's decisions."
+           if second_feature else ".")
+        + f" Focusing interventions or data collection on `{top_feature}` will have the greatest impact on outcomes."
+    )
 
     # ── Interactive prediction form ───────────────────────────────────────────
     with st.expander("Make a prediction", expanded=False):
