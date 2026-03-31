@@ -44,6 +44,6 @@ venv\Scripts\activate
 SPRING BREAK
 
 - Week 9: (In progress) Implement machine learning models to predict outcomes for each dataset
-- Week 10: Make new types of visualizations (scatterplots, KDE, etc) and also add a feature to search for datasets via city
-- Week 11: Implement File Upload System, where any user can upload their own dataset, if it has certain columns, then they can choose what domain the dataset belongs to, and it will be added to the dashboard.
+- Week 10: Make new types of visualizations (scatterplots, KDE, etc) and also add a feature to search for datasets via city and provide meaningful insights into each statistic
+- Week 11: (Compelte) Implement File Upload System, where any user can upload their own dataset, if it has certain columns, then they can choose what domain the dataset belongs to, and it will be added to the dashboard.
 - Week 12: Implement computer vision features such as building a CNN to recognize image data to then visualize problem areas within a city.
