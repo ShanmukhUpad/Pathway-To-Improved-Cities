@@ -1,12 +1,16 @@
 import geopandas as gpd
+import file_loader
 import pandas as pd
 import folium
 import json
 import numpy as np
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 from streamlit.components.v1 import html
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.model_selection import cross_val_score, KFold
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.model_selection import cross_val_score, KFold, LeaveOneOut
 from sklearn.metrics import r2_score, mean_absolute_error
 from pathlib import Path
 import warnings
@@ -14,12 +18,19 @@ warnings.filterwarnings('ignore')
 
 _HERE = Path(__file__).parent
 GEOJSON_PATH = _HERE / "chicago-community-areas.geojson"
+GEOJSON_URL  = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
 CSV_PATH     = _HERE / "censusChicago.csv"
+
+
+def _load_geojson() -> gpd.GeoDataFrame:
+    if GEOJSON_PATH.exists():
+        return gpd.read_file(GEOJSON_PATH)
+    return gpd.read_file(GEOJSON_URL)
 
 
 @st.cache_data
 def load_and_train():
-    gdf = gpd.read_file(GEOJSON_PATH)
+    gdf = _load_geojson()
     df  = pd.read_csv(CSV_PATH)
     gdf.columns = gdf.columns.str.strip()
     df.columns  = df.columns.str.strip()
@@ -95,10 +106,89 @@ def load_and_train():
     }
 
 
+@st.cache_data
+def load_income_regression():
+    df = pd.read_csv(CSV_PATH)
+    df.columns = df.columns.str.strip()
+    df = df.dropna(subset=["PER CAPITA INCOME", "COMMUNITY AREA NAME"])
+
+    FEATURE_COLS = [
+        "PERCENT OF HOUSING CROWDED",
+        "PERCENT HOUSEHOLDS BELOW POVERTY",
+        "PERCENT AGED 16+ UNEMPLOYED",
+        "PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA",
+        "PERCENT AGED UNDER 18 OR OVER 64",
+        "HARDSHIP INDEX",
+    ]
+    SHORT_NAMES = [
+        "Housing Crowded", "Below Poverty", "Unemployed 16+",
+        "No HS Diploma", "Under 18 / Over 64", "Hardship Index",
+    ]
+
+    df = df.dropna(subset=FEATURE_COLS)
+    X = df[FEATURE_COLS].values
+    y = df["PER CAPITA INCOME"].values
+
+    models = {
+        "Random Forest":       RandomForestRegressor(n_estimators=200, max_depth=5, random_state=42),
+        "Gradient Boosting":   GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, max_depth=3, random_state=42),
+        "Linear Regression":   LinearRegression(),
+        "Ridge Regression":    Ridge(alpha=1.0),
+    }
+
+    loo = LeaveOneOut()
+    model_maes = {}
+    for name, model in models.items():
+        scores = -cross_val_score(model, X, y, cv=loo, scoring="neg_mean_absolute_error")
+        model_maes[name] = round(float(scores.mean()), 0)
+
+    # Fit RF on full data for importance + residuals
+    rf = RandomForestRegressor(n_estimators=200, max_depth=5, random_state=42)
+    rf.fit(X, y)
+    preds = rf.predict(X)
+    residuals = y - preds
+
+    scatter_df = pd.DataFrame({
+        "neighborhood":   df["COMMUNITY AREA NAME"].values,
+        "income":         y,
+        "no_hs_diploma":  df["PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA"].values,
+        "predicted":      preds,
+        "residual":       residuals,
+    })
+
+    return {
+        "model_maes":      model_maes,
+        "feature_names":   SHORT_NAMES,
+        "rf_importances":  rf.feature_importances_.tolist(),
+        "scatter_df":      scatter_df,
+    }
+
+
 def render():
     st.set_page_config(page_title="Chicago Hardship ML", layout="wide")
 
-    data    = load_and_train()
+    with st.expander("Upload a supplemental dataset"):
+        file_loader.uploader(
+            domain="socioeconomics",
+            local_csv=None,
+            label="Upload a socioeconomic dataset",
+        )
+
+    if not CSV_PATH.exists():
+        st.error(
+            f"Missing data file: `censusChicago.csv`\n\n"
+            "Download it from the Chicago Data Portal:\n"
+            "**Census Data — Selected Socioeconomic Indicators in Chicago, 2008–2012**\n\n"
+            "Save it as `censusChicago.csv` inside the `src/` folder, then refresh the page."
+        )
+        return
+
+    try:
+        data = load_and_train()
+    except Exception as exc:
+        st.error(f"Failed to load socioeconomic data: {exc}")
+        return
+
     merged  = data["merged"]
     metrics = data["metrics"]
 
@@ -137,7 +227,12 @@ def render():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab1, tab2, tab3 = st.tabs(["🗺️  Choropleth Map", "📊  Model Diagnostics", "🔍  Feature Importance"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🗺️  Choropleth Map",
+        "📊  Model Diagnostics",
+        "🔍  Feature Importance",
+        "📈  Income Regression",
+    ])
 
     #  TAB 1: Map 
     with tab1:
@@ -371,5 +466,170 @@ def render():
         renderBars('gbp', gbImp, 'linear-gradient(90deg,#d86b3a,#f7934f)');
         </script></body></html>"""
         html(importance_html, height=440)
-        #helelp0
+
+    # ── TAB 4: Income Regression ──────────────────────────────────────
+    with tab4:
+        st.markdown("### Chicago Community Areas — Per Capita Income Regression")
+        st.caption(
+            "Random Forest trained on socioeconomic indicators to predict per capita income. "
+            "Leave-one-out cross-validation measures how well each model generalises to unseen neighborhoods."
+        )
+
+        inc = load_income_regression()
+        sdf = inc["scatter_df"]
+
+        # ── Panel 1: Model comparison (LOO-CV MAE) ────────────────────
+        st.markdown(
+            "**Model comparison — leave-one-out CV error**  \n"
+            "<sup>How accurately each model predicts income when tested on neighborhoods it has never seen. "
+            "Lower bar = fewer dollars of average error.</sup>",
+            unsafe_allow_html=True,
+        )
+        mae_df = pd.DataFrame(
+            {"Model": list(inc["model_maes"].keys()), "Mean Absolute Error ($)": list(inc["model_maes"].values())}
+        ).sort_values("Mean Absolute Error ($)")
+
+        fig_mae = px.bar(
+            mae_df, x="Mean Absolute Error ($)", y="Model",
+            orientation="h",
+            color="Mean Absolute Error ($)",
+            color_continuous_scale="Blues_r",
+            text="Mean Absolute Error ($)",
+        )
+        fig_mae.update_traces(texttemplate="$%{text:,.0f}", textposition="outside")
+        fig_mae.update_layout(
+            coloraxis_showscale=False,
+            yaxis={"categoryorder": "total ascending"},
+            margin={"t": 10},
+        )
+        st.plotly_chart(fig_mae, use_container_width=True)
+
+        best_model = mae_df.iloc[0]["Model"]
+        best_mae   = mae_df.iloc[0]["Mean Absolute Error ($)"]
+        worst_model= mae_df.iloc[-1]["Model"]
+        worst_mae  = mae_df.iloc[-1]["Mean Absolute Error ($)"]
+        st.info(
+            f"**Model comparison insight:** **{best_model}** performs best with a LOO-CV MAE of "
+            f"**${best_mae:,.0f}**, meaning when predicting the income of a neighborhood it has never seen, "
+            f"it is off by ${best_mae:,.0f} on average. "
+            f"{worst_model} has the highest error (${worst_mae:,.0f}). "
+            "Lower error models should be used when targeting resource allocation to specific neighborhoods."
+        )
+
+        st.divider()
+
+        col_imp, col_scatter = st.columns(2)
+
+        # ── Panel 2: Feature importance ───────────────────────────────
+        with col_imp:
+            st.markdown(
+                "**Feature importance (Random Forest)**  \n"
+                "<sup>% no HS diploma and % unemployed together account for the majority of what the model learns.</sup>",
+                unsafe_allow_html=True,
+            )
+            imp_df = pd.DataFrame({
+                "Feature":    inc["feature_names"],
+                "Importance": inc["rf_importances"],
+            }).sort_values("Importance")
+
+            fig_imp = px.bar(
+                imp_df, x="Importance", y="Feature",
+                orientation="h",
+                color="Importance",
+                color_continuous_scale="Blues",
+                text="Importance",
+            )
+            fig_imp.update_traces(texttemplate="%{text:.3f}", textposition="outside")
+            fig_imp.update_layout(
+                coloraxis_showscale=False,
+                yaxis={"categoryorder": "total ascending"},
+                margin={"t": 10},
+            )
+            st.plotly_chart(fig_imp, use_container_width=True)
+
+            imp_sorted   = sorted(zip(inc["feature_names"], inc["rf_importances"]), key=lambda x: -x[1])
+            top_feat, top_imp = imp_sorted[0]
+            sec_feat, sec_imp = imp_sorted[1] if len(imp_sorted) > 1 else ("", 0)
+            st.info(
+                f"**Feature importance insight:** **{top_feat}** is the dominant predictor of per capita income "
+                f"(importance: {top_imp:.3f}), meaning it has the single greatest influence on what the model "
+                f"learns. **{sec_feat}** is second ({sec_imp:.3f}). Together they account for "
+                f"**{(top_imp + sec_imp)*100:.1f}%** of model decisions. "
+                f"Policy interventions targeting {top_feat.lower()}, such as workforce development or "
+                "adult education programs, are likely to have the highest income-related impact."
+            )
+
+        # ── Panel 3: Income vs. top predictor scatter ─────────────────
+        with col_scatter:
+            st.markdown(
+                "**Income vs. top predictor (hover any dot to see the neighborhood)**  \n"
+                "<sup>% of residents aged 25+ without a high school diploma is the single strongest predictor "
+                "of per capita income.</sup>",
+                unsafe_allow_html=True,
+            )
+            fig_scatter = px.scatter(
+                sdf,
+                x="no_hs_diploma",
+                y=sdf["income"] / 1000,
+                hover_name="neighborhood",
+                hover_data={"income": ":$,.0f", "no_hs_diploma": ":.1f"},
+                labels={
+                    "no_hs_diploma": "% aged 25+ without HS diploma",
+                    "y": "Per capita income ($K)",
+                },
+                trendline="ols",
+                color_discrete_sequence=["#4f8ef7"],
+            )
+            fig_scatter.update_traces(marker_size=8, selector={"mode": "markers"})
+            fig_scatter.update_layout(margin={"t": 10})
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+            corr = sdf[["no_hs_diploma", "income"]].corr().iloc[0, 1]
+            low_edu_high_inc = sdf.nlargest(1, "income").iloc[0]
+            st.info(
+                f"**Scatter insight:** The correlation between % no HS diploma and per capita income is "
+                f"**r = {corr:.2f}**, a {'strong' if abs(corr) > 0.6 else 'moderate'} negative relationship. "
+                f"As the share of residents without a diploma rises, income falls sharply. "
+                f"**{low_edu_high_inc['neighborhood']}** is a notable outlier with high income despite having "
+                f"{low_edu_high_inc['no_hs_diploma']:.1f}% without a diploma, suggesting other wealth drivers "
+                "like investment income or housing equity are at play."
+            )
+
+        st.divider()
+
+        # ── Panel 4: Residuals ────────────────────────────────────────
+        st.markdown(
+            "**Residuals: where the model is surprised**  \n"
+            "<sup>Residual = actual income − predicted income. "
+            "Blue = richer than expected, red = poorer than expected.</sup>",
+            unsafe_allow_html=True,
+        )
+        sdf_sorted = sdf.sort_values("residual").reset_index(drop=True)
+        fig_resid = px.bar(
+            sdf_sorted,
+            x="neighborhood",
+            y="residual",
+            color="residual",
+            color_continuous_scale=["#d73027", "#fee08b", "#4575b4"],
+            color_continuous_midpoint=0,
+            labels={"neighborhood": "Neighborhoods (sorted by residual, low → high)", "residual": "Residual ($)"},
+            hover_data={"income": ":$,.0f", "predicted": ":$,.0f", "residual": ":$,.0f"},
+        )
+        fig_resid.update_layout(
+            xaxis={"tickangle": -45, "tickfont": {"size": 9}},
+            coloraxis_showscale=False,
+            margin={"t": 10},
+        )
+        st.plotly_chart(fig_resid, use_container_width=True)
+
+        most_over  = sdf_sorted.iloc[-1]
+        most_under = sdf_sorted.iloc[0]
+        st.info(
+            f"**Residuals insight:** **{most_over['neighborhood']}** is the most over-performing neighborhood. "
+            f"Its actual income is **${most_over['residual']:+,.0f}** above what its socioeconomic profile predicts. "
+            f"**{most_under['neighborhood']}** is the most under-performing, "
+            f"**${abs(most_under['residual']):,.0f} poorer** than expected given its indicators. "
+            "Large negative residuals (red bars) are priority candidates for economic development programs, "
+            "as they suggest structural barriers not captured by standard socioeconomic variables."
+        )
 

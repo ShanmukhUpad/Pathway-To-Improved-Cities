@@ -62,6 +62,27 @@ def render(chicago_geo, area_map):
     st.subheader(f"Historical {selected_crime} counts — {selected_area}")
     st.line_chart(area_data[selected_crime].values)
 
+    # ── Historical trend summary ──────────────────────────────────────────────
+    if not area_data[selected_crime].dropna().empty:
+        series = area_data[selected_crime].dropna()
+        latest_val = series.iloc[-1]
+        mean_val   = series.mean()
+        max_val    = series.max()
+        pct_vs_mean = ((latest_val - mean_val) / mean_val * 100) if mean_val else 0
+        direction  = "above" if pct_vs_mean > 0 else "below"
+        trend_color = "🔴" if pct_vs_mean > 10 else ("🟡" if pct_vs_mean > 0 else "🟢")
+        st.info(
+            f"{trend_color} **{selected_area} - {selected_crime} trend:** "
+            f"The most recent month recorded **{latest_val:.0f} incidents**, which is "
+            f"**{abs(pct_vs_mean):.1f}% {direction} the historical average** of {mean_val:.1f}. "
+            f"The all-time peak was **{max_val:.0f} incidents**. "
+            + ("This elevated level suggests increased enforcement or community intervention may be warranted."
+               if pct_vs_mean > 10
+               else ("Counts are near the historical average. Monitor for seasonal changes."
+                     if abs(pct_vs_mean) <= 10
+                     else "Counts are below the historical average, suggesting a positive trend."))
+        )
+
     # Prediction — use only the selected crime's own lag features + Month for seasonality
     crime_upper = selected_crime.upper()
     lag1_col = f'{crime_upper}_lag1'
@@ -95,6 +116,23 @@ def render(chicago_geo, area_map):
         if rmse is not None:
             col_f2.metric("RMSE", f"{rmse:.2f}")
             col_f3.metric("R²", f"{r2:.3f}")
+
+        # ── Forecast interpretation ───────────────────────────────────────────
+        r2_label  = "strong" if r2 and r2 >= 0.1 else ("weak" if r2 and r2 > 0 else "no correlation")
+        trend_vs_latest = prediction - latest_val if not area_data[selected_crime].dropna().empty else 0
+        chg_dir   = "increase" if trend_vs_latest > 0 else "decrease"
+        st.info(
+            f"**Forecast interpretation:** The model predicts **{round(prediction)} {selected_crime} incidents** "
+            f"next month in {selected_area}, a **{abs(trend_vs_latest):.0f}-incident {chg_dir}** from last month. "
+            + (f"An RMSE of {rmse:.2f} means predictions are typically off by plus or minus {rmse:.1f} incidents. "
+               f"An R² of {r2:.3f} indicates a **{r2_label}** fit: "
+               + ("the model captures the crime pattern well and forecasts are reliable."
+                  if r2 >= 0.1
+                  else ("the model shows a weak relationship. Treat the forecast as directional only."
+                        if r2 > 0
+                        else "the model shows no explanatory power. The forecast should not be relied upon."))
+               if rmse is not None else "")
+        )
     else:
         st.info("Not enough data to generate a prediction.")
 
@@ -144,6 +182,18 @@ def render(chicago_geo, area_map):
                 )
                 fig_pred.update_coloraxes(colorbar_tickformat='.2f')
                 st.plotly_chart(fig_pred, use_container_width=True)
+
+                # ── Predicted map summary ─────────────────────────────────────
+                top_pred = latest_month.nlargest(3, "Predicted")[["Community Area Name", "Predicted"]]
+                top_names = ", ".join(
+                    f"{r['Community Area Name']} ({r['Predicted']:.0f})"
+                    for _, r in top_pred.iterrows()
+                )
+                st.info(
+                    f"**Predicted hotspots for {crime_pred_type} next month:** {top_names}. "
+                    "These areas have the highest forecasted incident counts based on recent lag patterns. "
+                    "Proactive resource allocation here may reduce impact."
+                )
 
     # ── Generic ML predictor on the full crime pivot ──────────────────────────
     base_crime_cols = [

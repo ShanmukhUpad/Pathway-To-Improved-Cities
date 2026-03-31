@@ -127,6 +127,16 @@ def render():
     fig_routes.update_layout(coloraxis_showscale=False, xaxis_title="Ward")
     st.plotly_chart(fig_routes, use_container_width=True)
 
+    top_bus_ward    = bus_per_ward.loc[bus_per_ward["num_stops"].idxmax()]
+    bottom_bus_ward = bus_per_ward.loc[bus_per_ward["num_stops"].idxmin()]
+    st.info(
+        f"**Bus stop coverage insight:** Ward **{int(top_bus_ward['ward'])}** has the most bus stops "
+        f"({int(top_bus_ward['num_stops'])}), while Ward **{int(bottom_bus_ward['ward'])}** has the fewest "
+        f"({int(bottom_bus_ward['num_stops'])}). "
+        "Large gaps in stop counts between wards signal areas where residents may face longer walks to transit, "
+        "disproportionately affecting low-income and elderly populations."
+    )
+
     st.divider()
 
     # ── 2. Divvy Stations ────────────────────────────────────────────────
@@ -178,6 +188,18 @@ def render():
         fig_docks.update_layout(margin={"t": 30})
         st.plotly_chart(fig_docks, use_container_width=True)
 
+    avg_util         = divvy["utilization_ratio"].mean()
+    near_capacity    = (divvy["utilization_ratio"] >= 0.9).sum()
+    near_cap_pct     = near_capacity / len(divvy) * 100
+    st.info(
+        f"**Divvy utilization insight:** The average station utilization is **{avg_util:.1%}** "
+        f"({near_capacity} stations, {near_cap_pct:.1f}% of the network, are at or above 90% capacity). "
+        + ("Many stations are near capacity, suggesting dock shortages during peak times. "
+           "Expanding docks or adding new stations in high-utilization areas would improve reliability."
+           if near_cap_pct > 20 else
+           "Most stations have available capacity, though targeted monitoring of near-full stations is still valuable.")
+    )
+
     st.divider()
 
     # ── 3. Bike Route Infrastructure ─────────────────────────────────────
@@ -213,6 +235,16 @@ def render():
             color_discrete_sequence=["#31a354", "#a1d99b"],
         )
         st.plotly_chart(fig_cfl, use_container_width=True)
+
+    top_route_type  = route_counts.iloc[0]["Route Type"]
+    top_route_pct   = route_counts.iloc[0]["Count"] / route_counts["Count"].sum() * 100
+    contraflow_pct  = bike["contraflow_flag"].mean() * 100
+    st.info(
+        f"**Bike infrastructure insight:** **{top_route_type}** is the dominant route type "
+        f"({top_route_pct:.1f}% of all routes). "
+        f"Only **{contraflow_pct:.1f}% of routes have contraflow lanes**, which allow cyclists to travel against "
+        "one-way traffic. Expanding contraflow coverage improves safety and connectivity in dense urban areas."
+    )
 
     st.divider()
 
@@ -255,6 +287,18 @@ def render():
                 use_container_width=True,
                 height=300,
             )
+
+    top_ward    = merged.loc[merged["accessibility_score"].idxmax()]
+    bottom_ward = merged.loc[merged["accessibility_score"].idxmin()]
+    underserved_list = ", ".join(f"Ward {int(r['ward'])}" for _, r in underserved.head(5).iterrows())
+    st.info(
+        f"**Accessibility insight:** Ward **{int(top_ward['ward'])}** has the highest accessibility score "
+        f"({top_ward['accessibility_score']:.1f}), while Ward **{int(bottom_ward['ward'])}** scores lowest "
+        f"({bottom_ward['accessibility_score']:.1f}). "
+        f"**{len(underserved)} wards are underserved** (below median in both bus stops and Divvy stations)"
+        + (f": {underserved_list}. " if not underserved.empty else ". ")
+        + "These wards should be prioritized for transit investment to reduce mobility inequality across Chicago."
+    )
 
     st.divider()
 
