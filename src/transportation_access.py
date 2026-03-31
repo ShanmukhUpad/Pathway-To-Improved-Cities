@@ -5,8 +5,7 @@ import numpy as np
 import plotly.express as px
 import ml_predictor
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DATA = os.path.join(_ROOT, "transport_access_clean_data")
+_DATA = os.path.dirname(os.path.abspath(__file__))
 
 
 @st.cache_data(show_spinner="Loading transportation access data...")
@@ -292,7 +291,9 @@ def render():
     bottom_ward = merged.loc[merged["accessibility_score"].idxmin()]
     underserved_list = ", ".join(f"Ward {int(r['ward'])}" for _, r in underserved.head(5).iterrows())
     st.info(
-        f"**Accessibility insight:** Ward **{int(top_ward['ward'])}** has the highest accessibility score "
+        "**What is a ward?** Chicago is divided into 50 wards, each represented by an elected alderperson. "
+        "Wards are the primary unit of local government for infrastructure and transit decisions. "
+        f"\n\n**Accessibility insight:** Ward **{int(top_ward['ward'])}** has the highest accessibility score "
         f"({top_ward['accessibility_score']:.1f}), while Ward **{int(bottom_ward['ward'])}** scores lowest "
         f"({bottom_ward['accessibility_score']:.1f}). "
         f"**{len(underserved)} wards are underserved** (below median in both bus stops and Divvy stations)"
