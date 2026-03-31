@@ -7,6 +7,7 @@ import file_loader
 import public_safety
 import socieoeconomic
 import data_fetcher
+import transportation_access
 
 st.set_page_config(
     page_title="Pathway to Improved Cities",
@@ -110,6 +111,8 @@ with tab_safety:
 
 with tab_transport:
     crash.render(chicago_geo=chicago_geo)
+    st.divider()
+    transportation_access.render()
 
 
 # ══════════════════════════════════════════════
