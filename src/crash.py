@@ -1,10 +1,13 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import geopandas as gpd
 import os
 import file_loader
 import ml_predictor
+import map_utils
 
 _SRC = os.path.dirname(os.path.abspath(__file__))
 # Prefer the auto-fetched file; fall back to the bundled snapshot
@@ -165,6 +168,8 @@ def render(chicago_geo=None):
         "crash types, and damage severity."
     )
 
+    mapbox_style = map_utils.mapbox_style_picker(key_prefix="crash")
+
     with st.expander("Upload a supplemental dataset"):
         file_loader.uploader(
             domain="transportation",
@@ -242,6 +247,37 @@ def render(chicago_geo=None):
         f"peak day is **{peak_day}**, and peak month is **{peak_month}**. "
         "Targeted enforcement and road safety campaigns during these windows could meaningfully reduce crash frequency."
     )
+
+    # ── Crash Density Heatmap ───────────────────────────────────────────────
+    st.divider()
+    st.subheader("Crash Location Density")
+    path = _resolve_crash_csv()
+    if path:
+        try:
+            raw_coords = pd.read_csv(path, usecols=["LATITUDE", "LONGITUDE"], low_memory=False)
+            raw_coords["LATITUDE"] = pd.to_numeric(raw_coords["LATITUDE"], errors="coerce")
+            raw_coords["LONGITUDE"] = pd.to_numeric(raw_coords["LONGITUDE"], errors="coerce")
+            coords = raw_coords.dropna(subset=["LATITUDE", "LONGITUDE"])
+            coords = coords[(coords["LATITUDE"] > 41.6) & (coords["LATITUDE"] < 42.1)]
+
+            if not coords.empty:
+                fig_density = px.density_mapbox(
+                    coords, lat="LATITUDE", lon="LONGITUDE",
+                    radius=6, mapbox_style=mapbox_style,
+                    zoom=9.5, center={"lat": 41.8358, "lon": -87.6877},
+                    title="Crash Density Heatmap",
+                    color_continuous_scale="YlOrRd",
+                )
+                fig_density.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
+                st.plotly_chart(fig_density, use_container_width=True)
+
+                st.info(
+                    "**Crash density map:** Darker/warmer areas indicate higher concentrations of crashes. "
+                    "These hotspots should be prioritized for safety interventions such as traffic calming, "
+                    "signal improvements, or enforcement."
+                )
+        except Exception:
+            st.warning("Could not load coordinates for density map.")
 
     st.divider()
 
@@ -439,7 +475,86 @@ def render(chicago_geo=None):
         fig_units.update_layout(coloraxis_showscale=False)
         st.plotly_chart(fig_units, use_container_width=True)
 
-    # ── Section 7: ML Predictions ─────────────────────────────────────────────
+    # ── Section 7: Scatterplots ────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Speed and Lane Analysis Scatterplots")
+    scatter_sample = df1.sample(min(5000, len(df1)), random_state=42) if len(df1) > 5000 else df1
+    col_sc1, col_sc2 = st.columns(2)
+
+    with col_sc1:
+        fig_sc1 = px.scatter(
+            scatter_sample, x="POSTED_SPEED_LIMIT", y="CRASH_HOUR",
+            color="LIGHTING_CONDITION",
+            title="Speed Limit vs Crash Hour by Lighting",
+            labels={"POSTED_SPEED_LIMIT": "Posted Speed Limit (mph)", "CRASH_HOUR": "Hour of Day"},
+            opacity=0.4,
+        )
+        fig_sc1.update_layout(margin={"t": 30}, legend=dict(orientation="h", yanchor="bottom", y=-0.4))
+        st.plotly_chart(fig_sc1, use_container_width=True)
+
+    with col_sc2:
+        fig_sc2 = px.scatter(
+            scatter_sample, x="LANE_CNT", y="POSTED_SPEED_LIMIT",
+            color="ROADWAY_SURFACE_COND",
+            title="Lane Count vs Speed Limit by Surface Condition",
+            labels={"LANE_CNT": "Number of Lanes", "POSTED_SPEED_LIMIT": "Speed Limit (mph)"},
+            opacity=0.4,
+        )
+        fig_sc2.update_layout(margin={"t": 30}, legend=dict(orientation="h", yanchor="bottom", y=-0.4))
+        st.plotly_chart(fig_sc2, use_container_width=True)
+
+    st.info(
+        "**Scatter analysis:** These plots reveal relationships between road design and crash timing. "
+        "Clusters at specific speed-hour combinations highlight when certain road types are most dangerous."
+    )
+
+    # ── Section 8: Moran's I Spatial Autocorrelation ─────────────────────────
+    st.divider()
+    try:
+        if path:
+            raw_for_moran = pd.read_csv(path, usecols=["LATITUDE", "LONGITUDE"], low_memory=False)
+            raw_for_moran["LATITUDE"] = pd.to_numeric(raw_for_moran["LATITUDE"], errors="coerce")
+            raw_for_moran["LONGITUDE"] = pd.to_numeric(raw_for_moran["LONGITUDE"], errors="coerce")
+            raw_for_moran = raw_for_moran.dropna(subset=["LATITUDE", "LONGITUDE"])
+            raw_for_moran = raw_for_moran[
+                (raw_for_moran["LATITUDE"] > 41.6) & (raw_for_moran["LATITUDE"] < 42.1)
+            ]
+
+            if len(raw_for_moran) > 100:
+                geo_url = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
+                gdf_ca = gpd.read_file(geo_url)
+                gdf_ca["area_num_1"] = gdf_ca["area_num_1"].astype(int)
+
+                crash_points = gpd.GeoDataFrame(
+                    raw_for_moran,
+                    geometry=gpd.points_from_xy(raw_for_moran["LONGITUDE"], raw_for_moran["LATITUDE"]),
+                    crs="EPSG:4326",
+                )
+                joined = gpd.sjoin(
+                    crash_points,
+                    gdf_ca[["area_num_1", "community", "geometry"]],
+                    how="inner", predicate="within",
+                )
+                crash_by_ca = joined.groupby("area_num_1").size().reset_index(name="crash_count")
+                gdf_merged = gdf_ca.merge(crash_by_ca, on="area_num_1", how="inner")
+                gdf_merged["area_num_str"] = gdf_merged["area_num_1"].astype(str)
+
+                if len(gdf_merged) >= 10 and chicago_geo:
+                    map_utils.render_moran_analysis(
+                        gdf=gdf_merged,
+                        value_col="crash_count",
+                        name_col="community",
+                        id_col="area_num_str",
+                        geojson=chicago_geo,
+                        featureidkey="properties.area_num_1",
+                        key_prefix="crash_moran",
+                        mapbox_style=mapbox_style,
+                    )
+    except Exception as exc:
+        st.warning(f"Could not compute spatial autocorrelation: {exc}")
+
+    # ── Section 9: ML Predictions ────────────────────────────────────────────
+    st.divider()
     _CRASH_DEFAULT_FEATURES = [
         'WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND',
         'POSTED_SPEED_LIMIT', 'TRAFFICWAY_TYPE', 'INTERSECTION_RELATED_I',

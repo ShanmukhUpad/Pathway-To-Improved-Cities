@@ -1,9 +1,13 @@
 import os
+import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
+import geopandas as gpd
 import plotly.express as px
+import plotly.graph_objects as go
 import ml_predictor
+import map_utils
 
 _DATA = os.path.dirname(os.path.abspath(__file__))
 
@@ -64,12 +68,24 @@ def _load_and_process():
     return bus, divvy, bike, bus_per_ward, divvy_per_ward, merged
 
 
+@st.cache_data(show_spinner="Loading ward boundaries...")
+def _load_ward_geojson():
+    resp = requests.get(
+        "https://data.cityofchicago.org/resource/p293-wvbd.geojson",
+        params={"$limit": 100}, timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def render():
     st.header("Transportation Access Analysis")
     st.markdown(
         "Bus stop coverage, Divvy bike-share distribution, bike route infrastructure, "
         "and ward-level accessibility across Chicago."
     )
+
+    mapbox_style = map_utils.mapbox_style_picker(key_prefix="transport_access")
 
     try:
         bus, divvy, bike, bus_per_ward, divvy_per_ward, merged = _load_and_process()
@@ -82,20 +98,33 @@ def render():
     col_bmap, col_bbar = st.columns([3, 2])
 
     with col_bmap:
-        fig_bmap = px.scatter_mapbox(
-            bus,
-            lat="latitude", lon="longitude",
-            color="ward",
-            hover_name="cta_stop_name",
-            hover_data={"routes": True, "ward": True},
-            title="Bus Stops by Ward",
-            mapbox_style="open-street-map",
-            zoom=9.5,
-            center={"lat": 41.8358, "lon": -87.6877},
-            height=420,
-        )
-        fig_bmap.update_traces(marker_size=4)
-        fig_bmap.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, showlegend=False)
+        if map_utils.MAPBOX_TOKEN:
+            fig_bmap = go.Figure(go.Scattermapbox(
+                lat=bus["latitude"],
+                lon=bus["longitude"],
+                mode="markers",
+                marker=dict(size=5, color="#1f77b4"),
+                text=bus["cta_stop_name"],
+                hoverinfo="text",
+                cluster=dict(enabled=True, maxzoom=12, step=50),
+            ))
+            fig_bmap.update_layout(
+                mapbox=dict(style=mapbox_style, center=dict(lat=41.8358, lon=-87.6877), zoom=9.5),
+                margin={"r": 0, "t": 30, "l": 0, "b": 0},
+                title="Bus Stops by Ward (Clustered)",
+                showlegend=False, height=420,
+            )
+        else:
+            fig_bmap = px.scatter_mapbox(
+                bus, lat="latitude", lon="longitude", color="ward",
+                hover_name="cta_stop_name",
+                hover_data={"routes": True, "ward": True},
+                title="Bus Stops by Ward",
+                mapbox_style=mapbox_style, zoom=9.5,
+                center={"lat": 41.8358, "lon": -87.6877}, height=420,
+            )
+            fig_bmap.update_traces(marker_size=4)
+            fig_bmap.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, showlegend=False)
         st.plotly_chart(fig_bmap, use_container_width=True)
 
     with col_bbar:
@@ -154,8 +183,8 @@ def render():
                 "docks_in_service": True,
                 "utilization_ratio": ":.2f",
             },
-            title="Divvy Stations (In Service) — Utilization Ratio",
-            mapbox_style="open-street-map",
+            title="Divvy Stations (In Service) - Utilization Ratio",
+            mapbox_style=mapbox_style,
             zoom=9.5,
             center={"lat": 41.8358, "lon": -87.6877},
             height=420,
@@ -245,6 +274,40 @@ def render():
         "one-way traffic. Expanding contraflow coverage improves safety and connectivity in dense urban areas."
     )
 
+    # ── Transit Relationship Scatterplots ──────────────────────────────────
+    st.divider()
+    st.subheader("Transit Relationship Scatterplots")
+    col_s1, col_s2 = st.columns(2)
+
+    with col_s1:
+        fig_s1 = px.scatter(
+            merged, x="num_stops", y="num_stations",
+            size="accessibility_score", color="accessibility_score",
+            color_continuous_scale="RdYlGn",
+            hover_data={"ward": True},
+            title="Bus Stops vs Divvy Stations by Ward",
+            labels={"num_stops": "Number of Bus Stops", "num_stations": "Number of Divvy Stations"},
+        )
+        fig_s1.update_layout(coloraxis_showscale=False, margin={"t": 30})
+        st.plotly_chart(fig_s1, use_container_width=True)
+
+    with col_s2:
+        fig_s2 = px.scatter(
+            merged, x="avg_routes_per_stop", y="avg_docks",
+            color="has_bike_infra",
+            hover_data={"ward": True},
+            title="Avg Routes/Stop vs Avg Docks by Bike Infrastructure",
+            labels={"avg_routes_per_stop": "Avg Routes per Stop", "avg_docks": "Avg Docks per Station"},
+        )
+        fig_s2.update_layout(margin={"t": 30})
+        st.plotly_chart(fig_s2, use_container_width=True)
+
+    st.info(
+        "**Transit relationship insight:** These scatterplots reveal whether bus and bike-share infrastructure "
+        "are co-located or complementary. Wards with high bus stops but few Divvy stations represent "
+        "opportunities for bike-share expansion to create multimodal transit hubs."
+    )
+
     st.divider()
 
     # ── 4. Ward-Level Accessibility ──────────────────────────────────────
@@ -301,9 +364,34 @@ def render():
         + "These wards should be prioritized for transit investment to reduce mobility inequality across Chicago."
     )
 
+    # ── Moran's I Spatial Autocorrelation ────────────────────────────────
+    st.divider()
+    try:
+        ward_geojson = _load_ward_geojson()
+        gdf_wards = gpd.GeoDataFrame.from_features(ward_geojson["features"], crs="EPSG:4326")
+        gdf_wards["ward"] = gdf_wards["ward"].astype(int)
+
+        gdf_merged = gdf_wards.merge(merged, on="ward", how="inner")
+        gdf_merged["ward_name"] = "Ward " + gdf_merged["ward"].astype(str)
+        gdf_merged["ward_str"] = gdf_merged["ward"].astype(str)
+
+        if len(gdf_merged) >= 10:
+            map_utils.render_moran_analysis(
+                gdf=gdf_merged,
+                value_col="accessibility_score",
+                name_col="ward_name",
+                id_col="ward_str",
+                geojson=ward_geojson,
+                featureidkey="properties.ward",
+                key_prefix="transport_moran",
+                mapbox_style=mapbox_style,
+            )
+    except Exception as exc:
+        st.warning(f"Could not compute spatial autocorrelation: {exc}")
+
     st.divider()
 
-    # ── 5. ML Predictions ────────────────────────────────────────────────
+    # ── 6. ML Predictions ────────────────────────────────────────────────
     ml_predictor.render_predictor(
         merged,
         key_prefix="transport_access",

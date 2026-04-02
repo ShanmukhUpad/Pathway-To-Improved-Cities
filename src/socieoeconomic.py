@@ -1,16 +1,16 @@
 import geopandas as gpd
 import file_loader
 import pandas as pd
-import folium
 import json
 import numpy as np
+import requests
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from streamlit.components.v1 import html
+import map_utils
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.linear_model import LinearRegression, Ridge
-from sklearn.model_selection import cross_val_score, KFold, LeaveOneOut
+from sklearn.model_selection import cross_val_score, KFold
 from sklearn.metrics import r2_score, mean_absolute_error
 from pathlib import Path
 import warnings
@@ -106,66 +106,7 @@ def load_and_train():
     }
 
 
-@st.cache_data
-def load_income_regression():
-    df = pd.read_csv(CSV_PATH)
-    df.columns = df.columns.str.strip()
-    df = df.dropna(subset=["PER CAPITA INCOME", "COMMUNITY AREA NAME"])
-
-    FEATURE_COLS = [
-        "PERCENT OF HOUSING CROWDED",
-        "PERCENT HOUSEHOLDS BELOW POVERTY",
-        "PERCENT AGED 16+ UNEMPLOYED",
-        "PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA",
-        "PERCENT AGED UNDER 18 OR OVER 64",
-        "HARDSHIP INDEX",
-    ]
-    SHORT_NAMES = [
-        "Housing Crowded", "Below Poverty", "Unemployed 16+",
-        "No HS Diploma", "Under 18 / Over 64", "Hardship Index",
-    ]
-
-    df = df.dropna(subset=FEATURE_COLS)
-    X = df[FEATURE_COLS].values
-    y = df["PER CAPITA INCOME"].values
-
-    models = {
-        "Random Forest":       RandomForestRegressor(n_estimators=200, max_depth=5, random_state=42),
-        "Gradient Boosting":   GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, max_depth=3, random_state=42),
-        "Linear Regression":   LinearRegression(),
-        "Ridge Regression":    Ridge(alpha=1.0),
-    }
-
-    loo = LeaveOneOut()
-    model_maes = {}
-    for name, model in models.items():
-        scores = -cross_val_score(model, X, y, cv=loo, scoring="neg_mean_absolute_error")
-        model_maes[name] = round(float(scores.mean()), 0)
-
-    # Fit RF on full data for importance + residuals
-    rf = RandomForestRegressor(n_estimators=200, max_depth=5, random_state=42)
-    rf.fit(X, y)
-    preds = rf.predict(X)
-    residuals = y - preds
-
-    scatter_df = pd.DataFrame({
-        "neighborhood":   df["COMMUNITY AREA NAME"].values,
-        "income":         y,
-        "no_hs_diploma":  df["PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA"].values,
-        "predicted":      preds,
-        "residual":       residuals,
-    })
-
-    return {
-        "model_maes":      model_maes,
-        "feature_names":   SHORT_NAMES,
-        "rf_importances":  rf.feature_importances_.tolist(),
-        "scatter_df":      scatter_df,
-    }
-
-
 def render():
-    st.set_page_config(page_title="Chicago Hardship ML", layout="wide")
 
     with st.expander("Upload a supplemental dataset"):
         file_loader.uploader(
@@ -173,6 +114,8 @@ def render():
             local_csv=None,
             label="Upload a socioeconomic dataset",
         )
+
+    mapbox_style = map_utils.mapbox_style_picker(key_prefix="socio")
 
     _csv_missing = not CSV_PATH.exists()
     if not _csv_missing:
@@ -210,11 +153,10 @@ def render():
             "from the Chicago Data Portal, save it as `censusChicago.csv` in `src/`, then refresh."
         )
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3 = st.tabs([
         "Choropleth Map",
         "Model Diagnostics",
         "Feature Importance",
-        "Income Regression",
     ])
 
     #  TAB 1: Map
@@ -232,84 +174,45 @@ def render():
             }
             chosen_col = col_map[model_choice]
 
-            m = folium.Map(location=[41.85, -87.68], zoom_start=10, tiles="CartoDB positron")
+            geojson_dict = merged.__geo_interface__
 
-            folium.Choropleth(
-                geo_data=merged,
-                data=merged,
-                columns=["area_num_1", chosen_col],
-                key_on="feature.properties.area_num_1",
-                fill_color="YlOrRd",
-                fill_opacity=0.7,
-                line_opacity=0.3,
-                legend_name=model_choice,
-                highlight=True,
-            ).add_to(m)
+            fig_main = px.choropleth_mapbox(
+                merged, geojson=geojson_dict,
+                locations="area_num_1", featureidkey="properties.area_num_1",
+                color=chosen_col, color_continuous_scale="YlOrRd",
+                mapbox_style=mapbox_style,
+                zoom=9, center={"lat": 41.85, "lon": -87.68},
+                opacity=0.7,
+                hover_name="community",
+                hover_data={"HARDSHIP INDEX": True, "RF_Predicted": True, "GB_Predicted": True,
+                           "PER CAPITA INCOME": True, "PERCENT HOUSEHOLDS BELOW POVERTY": True},
+                title=model_choice,
+            )
+            fig_main.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=620)
+            st.plotly_chart(fig_main, use_container_width=True)
 
-            folium.GeoJson(
-                merged,
-                style_function=lambda _: {
-                    "fillColor": "transparent", "color": "black",
-                    "weight": 1, "fillOpacity": 0,
-                },
-                highlight_function=lambda _: {
-                    "weight": 3, "color": "#4f8ef7", "fillOpacity": 0.15,
-                },
-                tooltip=folium.GeoJsonTooltip(
-                    fields=["community", "HARDSHIP INDEX", "RF_Predicted", "GB_Predicted",
-                            "PER CAPITA INCOME", "PERCENT HOUSEHOLDS BELOW POVERTY"],
-                    aliases=["Community:", "Actual Hardship:", "RF Predicted:", "GB Predicted:",
-                             "Per Capita Income:", "% Below Poverty:"],
-                    localize=True, sticky=False, labels=True,
-                    style="background-color:white;border:1px solid #ccc;border-radius:4px;padding:6px;",
-                ),
-            ).add_to(m)
-
-            html(m._repr_html_(), height=620)
-
-            st.markdown("<div class='section-title'>Predicted Hardship Index — Side by Side</div>", unsafe_allow_html=True)
-            st.caption("Left: Random Forest · Right: Gradient Boosting. Hover any area to compare values.")
+            st.markdown("**Predicted Hardship Index - Side by Side**")
+            st.caption("Left: Random Forest. Right: Gradient Boosting. Hover any area to compare values.")
 
             left_col, right_col = st.columns(2)
-
-            for col, pred_col, label, pin_color in [
-                (left_col,  "RF_Predicted", "Random Forest Predicted", "#4f8ef7"),
-                (right_col, "GB_Predicted", "Gradient Boosting Predicted", "#f7934f"),
+            for col, pred_col, label in [
+                (left_col,  "RF_Predicted", "Random Forest Predicted"),
+                (right_col, "GB_Predicted", "Gradient Boosting Predicted"),
             ]:
-                m_pred = folium.Map(location=[41.85, -87.68], zoom_start=10, tiles="CartoDB positron")
-
-                folium.Choropleth(
-                    geo_data=merged,
-                    data=merged,
-                    columns=["area_num_1", pred_col],
-                    key_on="feature.properties.area_num_1",
-                    fill_color="YlOrRd",
-                    fill_opacity=0.7,
-                    line_opacity=0.3,
-                    legend_name=label,
-                    highlight=True,
-                ).add_to(m_pred)
-
-                folium.GeoJson(
-                    merged,
-                    style_function=lambda _: {
-                        "fillColor": "transparent", "color": "black",
-                        "weight": 1, "fillOpacity": 0,
-                    },
-                    highlight_function=lambda _, c=pin_color: {
-                        "weight": 3, "color": c, "fillOpacity": 0.2,
-                    },
-                    tooltip=folium.GeoJsonTooltip(
-                        fields=["community", "HARDSHIP INDEX", pred_col],
-                        aliases=["Community:", "Actual Hardship:", f"{label}:"],
-                        localize=True, sticky=False, labels=True,
-                        style="background-color:white;border:1px solid #ccc;border-radius:4px;padding:6px;",
-                    ),
-                ).add_to(m_pred)
-
                 with col:
-                    st.markdown(f"**{label}**")
-                    html(m_pred._repr_html_(), height=480)
+                    fig_pred = px.choropleth_mapbox(
+                        merged, geojson=geojson_dict,
+                        locations="area_num_1", featureidkey="properties.area_num_1",
+                        color=pred_col, color_continuous_scale="YlOrRd",
+                        mapbox_style=mapbox_style,
+                        zoom=9, center={"lat": 41.85, "lon": -87.68},
+                        opacity=0.7,
+                        hover_name="community",
+                        hover_data={"HARDSHIP INDEX": True, pred_col: True},
+                        title=label,
+                    )
+                    fig_pred.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=480)
+                    st.plotly_chart(fig_pred, use_container_width=True)
         else:
             st.info("Load `censusChicago.csv` to view this tab.")
 
@@ -460,178 +363,66 @@ def render():
         else:
             st.info("Load `censusChicago.csv` to view this tab.")
 
-    # ── TAB 4: Income Regression ──────────────────────────────────────
-    with tab4:
-        st.markdown("### Chicago Community Areas — Per Capita Income Regression")
-        st.caption(
-            "Random Forest trained on socioeconomic indicators to predict per capita income. "
-            "Leave-one-out cross-validation measures how well each model generalises to unseen neighborhoods."
+    # ── Scatterplots ─────────────────────────────────────────────────────
+    if not _csv_missing:
+        st.divider()
+        st.subheader("Socioeconomic Scatterplots")
+        df_scatter = data["df"]
+        col_sc1, col_sc2 = st.columns(2)
+
+        with col_sc1:
+            fig_pov = px.scatter(
+                df_scatter, x="PERCENT HOUSEHOLDS BELOW POVERTY", y="HARDSHIP INDEX",
+                hover_name="COMMUNITY AREA NAME",
+                color="PER CAPITA INCOME",
+                color_continuous_scale="RdYlGn_r",
+                title="Poverty Rate vs Hardship Index",
+                labels={"PERCENT HOUSEHOLDS BELOW POVERTY": "% Below Poverty",
+                        "HARDSHIP INDEX": "Hardship Index"},
+            )
+            fig_pov.update_layout(margin={"t": 30})
+            st.plotly_chart(fig_pov, use_container_width=True)
+
+        with col_sc2:
+            fig_inc = px.scatter(
+                df_scatter, x="PER CAPITA INCOME", y="HARDSHIP INDEX",
+                hover_name="COMMUNITY AREA NAME",
+                color="PERCENT AGED 16+ UNEMPLOYED",
+                color_continuous_scale="YlOrRd",
+                title="Per Capita Income vs Hardship Index",
+                labels={"PER CAPITA INCOME": "Per Capita Income ($)",
+                        "HARDSHIP INDEX": "Hardship Index"},
+            )
+            fig_inc.update_layout(margin={"t": 30})
+            st.plotly_chart(fig_inc, use_container_width=True)
+
+        st.info(
+            "**Socioeconomic relationships:** Higher poverty rates strongly correlate with higher hardship scores. "
+            "Per capita income shows a strong inverse relationship with hardship. Communities with both "
+            "low income and high poverty are the most vulnerable and should be prioritized for economic intervention."
         )
 
-        _html_path = Path(__file__).parent / "chicago_regression_interactive.html"
-        if _html_path.exists():
-            html(_html_path.read_text(encoding="utf-8"), height=900, scrolling=True)
-            st.divider()
-        else:
-            st.warning("`chicago_regression_interactive.html` not found in `src/`. Skipping interactive chart.")
+        # ── Moran's I Spatial Autocorrelation ────────────────────────────
+        st.divider()
+        try:
+            @st.cache_data
+            def _load_geojson_dict():
+                resp = requests.get(GEOJSON_URL, timeout=30)
+                resp.raise_for_status()
+                return resp.json()
 
-        if not _csv_missing:
-            inc = load_income_regression()
-            sdf = inc["scatter_df"]
+            geojson_dict_moran = _load_geojson_dict()
 
-            # ── Panel 1: Model comparison (LOO-CV MAE) ────────────────────
-            st.markdown(
-                "**Model comparison — leave-one-out CV error**  \n"
-                "<sup>How accurately each model predicts income when tested on neighborhoods it has never seen. "
-                "Lower bar = fewer dollars of average error.</sup>",
-                unsafe_allow_html=True,
+            merged["area_num_str"] = merged["area_num_1"].astype(str)
+            map_utils.render_moran_analysis(
+                gdf=merged,
+                value_col="HARDSHIP INDEX",
+                name_col="community",
+                id_col="area_num_str",
+                geojson=geojson_dict_moran,
+                featureidkey="properties.area_num_1",
+                key_prefix="socio_moran",
+                mapbox_style=mapbox_style,
             )
-            mae_df = pd.DataFrame(
-                {"Model": list(inc["model_maes"].keys()), "Mean Absolute Error ($)": list(inc["model_maes"].values())}
-            ).sort_values("Mean Absolute Error ($)")
-
-            fig_mae = px.bar(
-                mae_df, x="Mean Absolute Error ($)", y="Model",
-                orientation="h",
-                color="Mean Absolute Error ($)",
-                color_continuous_scale="Blues_r",
-                text="Mean Absolute Error ($)",
-            )
-            fig_mae.update_traces(texttemplate="$%{text:,.0f}", textposition="outside")
-            fig_mae.update_layout(
-                coloraxis_showscale=False,
-                yaxis={"categoryorder": "total ascending"},
-                margin={"t": 10},
-            )
-            st.plotly_chart(fig_mae, use_container_width=True)
-
-            best_model = mae_df.iloc[0]["Model"]
-            best_mae   = mae_df.iloc[0]["Mean Absolute Error ($)"]
-            worst_model= mae_df.iloc[-1]["Model"]
-            worst_mae  = mae_df.iloc[-1]["Mean Absolute Error ($)"]
-            st.info(
-                f"**Model comparison insight:** **{best_model}** performs best with a LOO-CV MAE of "
-                f"**${best_mae:,.0f}**, meaning when predicting the income of a neighborhood it has never seen, "
-                f"it is off by ${best_mae:,.0f} on average. "
-                f"{worst_model} has the highest error (${worst_mae:,.0f}). "
-                "Lower error models should be used when targeting resource allocation to specific neighborhoods."
-            )
-
-            st.divider()
-
-            col_imp, col_scatter = st.columns(2)
-
-            # ── Panel 2: Feature importance ───────────────────────────────
-            with col_imp:
-                st.markdown(
-                    "**Feature importance (Random Forest)**  \n"
-                    "<sup>% no HS diploma and % unemployed together account for the majority of what the model learns.</sup>",
-                    unsafe_allow_html=True,
-                )
-                imp_df = pd.DataFrame({
-                    "Feature":    inc["feature_names"],
-                    "Importance": inc["rf_importances"],
-                }).sort_values("Importance")
-
-                fig_imp = px.bar(
-                    imp_df, x="Importance", y="Feature",
-                    orientation="h",
-                    color="Importance",
-                    color_continuous_scale="Blues",
-                    text="Importance",
-                )
-                fig_imp.update_traces(texttemplate="%{text:.3f}", textposition="outside")
-                fig_imp.update_layout(
-                    coloraxis_showscale=False,
-                    yaxis={"categoryorder": "total ascending"},
-                    margin={"t": 10},
-                )
-                st.plotly_chart(fig_imp, use_container_width=True)
-
-                imp_sorted   = sorted(zip(inc["feature_names"], inc["rf_importances"]), key=lambda x: -x[1])
-                top_feat, top_imp = imp_sorted[0]
-                sec_feat, sec_imp = imp_sorted[1] if len(imp_sorted) > 1 else ("", 0)
-                st.info(
-                    f"**Feature importance insight:** **{top_feat}** is the dominant predictor of per capita income "
-                    f"(importance: {top_imp:.3f}), meaning it has the single greatest influence on what the model "
-                    f"learns. **{sec_feat}** is second ({sec_imp:.3f}). Together they account for "
-                    f"**{(top_imp + sec_imp)*100:.1f}%** of model decisions. "
-                    f"Policy interventions targeting {top_feat.lower()}, such as workforce development or "
-                    "adult education programs, are likely to have the highest income-related impact."
-                )
-
-            # ── Panel 3: Income vs. top predictor scatter ─────────────────
-            with col_scatter:
-                st.markdown(
-                    "**Income vs. top predictor (hover any dot to see the neighborhood)**  \n"
-                    "<sup>% of residents aged 25+ without a high school diploma is the single strongest predictor "
-                    "of per capita income.</sup>",
-                    unsafe_allow_html=True,
-                )
-                fig_scatter = px.scatter(
-                    sdf,
-                    x="no_hs_diploma",
-                    y=sdf["income"] / 1000,
-                    hover_name="neighborhood",
-                    hover_data={"income": ":$,.0f", "no_hs_diploma": ":.1f"},
-                    labels={
-                        "no_hs_diploma": "% aged 25+ without HS diploma",
-                        "y": "Per capita income ($K)",
-                    },
-                    trendline="ols",
-                    color_discrete_sequence=["#4f8ef7"],
-                )
-                fig_scatter.update_traces(marker_size=8, selector={"mode": "markers"})
-                fig_scatter.update_layout(margin={"t": 10})
-                st.plotly_chart(fig_scatter, use_container_width=True)
-
-                corr = sdf[["no_hs_diploma", "income"]].corr().iloc[0, 1]
-                low_edu_high_inc = sdf.nlargest(1, "income").iloc[0]
-                st.info(
-                    f"**Scatter insight:** The correlation between % no HS diploma and per capita income is "
-                    f"**r = {corr:.2f}**, a {'strong' if abs(corr) > 0.6 else 'moderate'} negative relationship. "
-                    f"As the share of residents without a diploma rises, income falls sharply. "
-                    f"**{low_edu_high_inc['neighborhood']}** is a notable outlier with high income despite having "
-                    f"{low_edu_high_inc['no_hs_diploma']:.1f}% without a diploma, suggesting other wealth drivers "
-                    "like investment income or housing equity are at play."
-                )
-
-            st.divider()
-
-            # ── Panel 4: Residuals ────────────────────────────────────────
-            st.markdown(
-                "**Residuals: where the model is surprised**  \n"
-                "<sup>Residual = actual income − predicted income. "
-                "Blue = richer than expected, red = poorer than expected.</sup>",
-                unsafe_allow_html=True,
-            )
-            sdf_sorted = sdf.sort_values("residual").reset_index(drop=True)
-            fig_resid = px.bar(
-                sdf_sorted,
-                x="neighborhood",
-                y="residual",
-                color="residual",
-                color_continuous_scale=["#d73027", "#fee08b", "#4575b4"],
-                color_continuous_midpoint=0,
-                labels={"neighborhood": "Neighborhoods (sorted by residual, low → high)", "residual": "Residual ($)"},
-                hover_data={"income": ":$,.0f", "predicted": ":$,.0f", "residual": ":$,.0f"},
-            )
-            fig_resid.update_layout(
-                xaxis={"tickangle": -45, "tickfont": {"size": 9}},
-                coloraxis_showscale=False,
-                margin={"t": 10},
-            )
-            st.plotly_chart(fig_resid, use_container_width=True)
-
-            most_over  = sdf_sorted.iloc[-1]
-            most_under = sdf_sorted.iloc[0]
-            st.info(
-                f"**Residuals insight:** **{most_over['neighborhood']}** is the most over-performing neighborhood. "
-                f"Its actual income is **${most_over['residual']:+,.0f}** above what its socioeconomic profile predicts. "
-                f"**{most_under['neighborhood']}** is the most under-performing, "
-                f"**${abs(most_under['residual']):,.0f} poorer** than expected given its indicators. "
-                "Large negative residuals (red bars) are priority candidates for economic development programs, "
-                "as they suggest structural barriers not captured by standard socioeconomic variables."
-            )
-        else:
-            st.info("The model comparison, feature importance, scatter, and residual panels below require `censusChicago.csv`. The interactive chart above is available without it.")
+        except Exception as exc:
+            st.warning(f"Could not compute spatial autocorrelation: {exc}")

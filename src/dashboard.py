@@ -8,11 +8,14 @@ import public_safety
 import socieoeconomic
 import data_fetcher
 import transportation_access
+import map_utils
 
 st.set_page_config(
     page_title="Pathway to Improved Cities",
     layout="wide"
 )
+
+map_utils.init_mapbox()
 
 st.title("Pathway to Improved Cities Dashboard")
 
