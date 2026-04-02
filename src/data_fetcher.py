@@ -203,7 +203,7 @@ def fetch_crashes(force: bool = False) -> str:
                 "lane_cnt,posted_speed_limit,traffic_control_device,"
                 "device_condition,intersection_related_i,first_crash_type,"
                 "crash_type,damage,num_units,hit_and_run_i,"
-                "latitude,longitude"
+                "latitude,longitude,beat_of_occurrence"
             ),
         },
     )

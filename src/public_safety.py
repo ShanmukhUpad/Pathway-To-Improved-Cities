@@ -6,8 +6,10 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
 import plotly.express as px
+import geopandas as gpd
 import file_loader
 import ml_predictor
+import map_utils
 
 CRIME_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crime_monthly_pivot.csv")
 
@@ -21,6 +23,15 @@ def _load_crime_data(area_map):
         pivot[f'{crime}_lag1'] = pivot.groupby('Community Area')[crime].shift(1)
         pivot[f'{crime}_lag3'] = pivot.groupby('Community Area')[crime].shift(3)
     return pivot
+
+
+@st.cache_data(show_spinner="Loading community area geometries...")
+def _load_community_areas_gdf():
+    """Load Chicago community area polygons as a GeoDataFrame (cached)."""
+    geo_url = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
+    gdf_ca = gpd.read_file(geo_url)
+    gdf_ca["area_num_1"] = gdf_ca["area_num_1"].astype(int)
+    return gdf_ca
 
 
 def render(chicago_geo, area_map):
@@ -56,6 +67,8 @@ def render(chicago_geo, area_map):
         selected_area = st.selectbox("Select Community Area", community_areas, key="safety_area")
     with col2:
         selected_crime = st.selectbox("Select Crime Type", crime_cols, key="safety_crime")
+
+    mapbox_style = map_utils.mapbox_style_picker(key_prefix="safety")
 
     area_data = pivot[pivot['Community Area Name'] == selected_area].sort_values(['Year', 'Month'])
 
@@ -147,7 +160,7 @@ def render(chicago_geo, area_map):
             map_data, geojson=chicago_geo,
             locations='Community Area Name', featureidkey="properties.community",
             color=crime_map_type, color_continuous_scale="Reds",
-            mapbox_style="open-street-map", zoom=9,
+            mapbox_style=mapbox_style, zoom=9,
             center={"lat": 41.8781, "lon": -87.6298}, opacity=0.5,
             labels={crime_map_type: "Crime Count"}
         )
@@ -176,7 +189,7 @@ def render(chicago_geo, area_map):
                     geojson=chicago_geo,
                     locations='Community Area Name', featureidkey="properties.community",
                     color='Predicted', color_continuous_scale="Reds",
-                    mapbox_style="open-street-map", zoom=9,
+                    mapbox_style=mapbox_style, zoom=9,
                     center={"lat": 41.8781, "lon": -87.6298}, opacity=0.5,
                     labels={'Predicted': f'Predicted {crime_pred_type} Count'}
                 )
@@ -194,6 +207,122 @@ def render(chicago_geo, area_map):
                     "These areas have the highest forecasted incident counts based on recent lag patterns. "
                     "Proactive resource allocation here may reduce impact."
                 )
+
+    # ── Crime Scatterplots ────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Crime Scatterplots")
+
+    # Aggregate total crime count per community area for the selected crime type
+    scatter_agg = pivot.groupby("Community Area")[selected_crime].sum().reset_index()
+    scatter_agg.columns = ["Community Area", "Total Crime Count"]
+    scatter_agg["Community Area Name"] = scatter_agg["Community Area"].map(area_map)
+
+    scatter_col1, scatter_col2 = st.columns(2)
+
+    with scatter_col1:
+        fig_sc1 = px.scatter(
+            scatter_agg,
+            x="Community Area",
+            y="Total Crime Count",
+            color="Community Area Name",
+            hover_name="Community Area Name",
+            hover_data={"Community Area": True, "Total Crime Count": True},
+            labels={
+                "Community Area": "Community Area Number",
+                "Total Crime Count": f"Total {selected_crime} Count",
+            },
+            title=f"Community Area vs Total {selected_crime}",
+        )
+        fig_sc1.update_layout(
+            showlegend=False,
+            margin={"t": 40, "b": 0},
+        )
+        st.plotly_chart(fig_sc1, use_container_width=True)
+
+    with scatter_col2:
+        # Build predicted vs actual scatter if predictions are available
+        crime_pred_upper = selected_crime.upper()
+        sc_lag_cols = [f"{crime_pred_upper}_lag1", f"{crime_pred_upper}_lag3"]
+        sc_missing = [c for c in sc_lag_cols if c not in pivot.columns]
+
+        if not sc_missing:
+            sc_pred_data = pivot.dropna(subset=sc_lag_cols + [crime_pred_upper])
+            if len(sc_pred_data) >= 6:
+                sc_model = RandomForestRegressor(n_estimators=100, random_state=42)
+                sc_model.fit(sc_pred_data[sc_lag_cols], sc_pred_data[crime_pred_upper])
+                sc_latest = pivot.groupby("Community Area Name").tail(1).copy()
+                sc_latest["Predicted"] = sc_model.predict(
+                    sc_latest[sc_lag_cols].fillna(0)
+                ).round(2)
+                sc_latest["Actual"] = sc_latest[selected_crime]
+
+                fig_sc2 = px.scatter(
+                    sc_latest,
+                    x="Actual",
+                    y="Predicted",
+                    color="Community Area Name",
+                    hover_name="Community Area Name",
+                    hover_data={"Actual": True, "Predicted": True},
+                    labels={
+                        "Actual": f"Actual {selected_crime} Count",
+                        "Predicted": f"Predicted {selected_crime} Count",
+                    },
+                    title=f"Actual vs Predicted {selected_crime}",
+                )
+                # Add a 45-degree reference line
+                max_val_sc = max(
+                    sc_latest["Actual"].max(),
+                    sc_latest["Predicted"].max(),
+                    1,
+                )
+                fig_sc2.add_shape(
+                    type="line",
+                    x0=0, y0=0,
+                    x1=max_val_sc, y1=max_val_sc,
+                    line=dict(color="gray", dash="dash"),
+                )
+                fig_sc2.update_layout(
+                    showlegend=False,
+                    margin={"t": 40, "b": 0},
+                )
+                st.plotly_chart(fig_sc2, use_container_width=True)
+            else:
+                st.info("Not enough data to produce an actual vs predicted scatterplot.")
+        else:
+            st.info("Lag features not available for the selected crime type; cannot produce predicted scatterplot.")
+
+    # ── Moran's I Spatial Autocorrelation ────────────────────────────────────
+    st.divider()
+    try:
+        gdf_ca = _load_community_areas_gdf()
+
+        # Aggregate selected crime by community area
+        crime_by_ca = pivot.groupby("Community Area")[selected_crime].sum().reset_index()
+        crime_by_ca.columns = ["Community Area", "crime_total"]
+
+        gdf_merged = gdf_ca.merge(
+            crime_by_ca,
+            left_on="area_num_1",
+            right_on="Community Area",
+            how="inner",
+        )
+        gdf_merged["area_num_str"] = gdf_merged["area_num_1"].astype(str)
+
+        if len(gdf_merged) >= 10:
+            map_utils.render_moran_analysis(
+                gdf=gdf_merged,
+                value_col="crime_total",
+                name_col="community",
+                id_col="area_num_str",
+                geojson=chicago_geo,
+                featureidkey="properties.area_num_1",
+                key_prefix="safety_moran",
+                mapbox_style=mapbox_style,
+            )
+        else:
+            st.warning("Not enough community areas with data to compute Moran's I (need at least 10).")
+    except Exception as exc:
+        st.warning(f"Could not compute Moran's I: {exc}")
 
     # ── Generic ML predictor on the full crime pivot ──────────────────────────
     base_crime_cols = [
