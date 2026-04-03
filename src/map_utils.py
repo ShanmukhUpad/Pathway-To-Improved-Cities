@@ -12,42 +12,51 @@ import numpy as np
 import geopandas as gpd
 import plotly.express as px
 import plotly.graph_objects as go
+from dotenv import load_dotenv
 from esda.moran import Moran, Moran_Local
 from libpysal.weights import Queen, KNN
 
+# Load .env from src/ directory so the token is available at import time
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
 # ── Mapbox token ─────────────────────────────────────────────────────────────
 
-MAPBOX_TOKEN = os.environ.get("PUBLIC_MAPBOX_TOKEN", "")
+_raw_token = os.environ.get("PUBLIC_MAPBOX_TOKEN", "")
+# Plotly 6+ uses MapLibre by default. A public Mapbox token (pk.*) unlocks
+# premium Mapbox-hosted styles (streets, satellite, etc.).
+MAPBOX_TOKEN = _raw_token if _raw_token.startswith("pk.") else ""
 
-MAPBOX_STYLES = {
-    "Streets":   "streets-v12",
-    "Light":     "light-v11",
-    "Dark":      "dark-v11",
-    "Satellite": "satellite-streets-v12",
+MAP_STYLES = {
+    "Open Street Map": "open-street-map",
+    "Streets":         "streets",
+    "Light":           "light",
+    "Dark":            "dark",
+    "Satellite":       "satellite",
 }
 
 
 def init_mapbox():
-    """Set the Plotly global Mapbox access token. Call once at app startup."""
+    """Store the Mapbox token so Plotly can use premium map styles."""
     if MAPBOX_TOKEN:
-        px.set_mapbox_access_token(MAPBOX_TOKEN)
+        import plotly.io as pio
+        pio.templates.default = "plotly"
 
 
 def mapbox_style_picker(key_prefix: str = "map") -> str:
     """
-    Render a selectbox for Mapbox styles and return the chosen style string.
-    Falls back to 'open-street-map' if no token is set.
+    Render a selectbox for map styles and return the chosen style string.
+    Shows all styles when a Mapbox token is set; otherwise only open-street-map.
     """
     if not MAPBOX_TOKEN:
         return "open-street-map"
 
     choice = st.selectbox(
         "Map style",
-        list(MAPBOX_STYLES.keys()),
-        index=0,
-        key=f"{key_prefix}_mapbox_style",
+        list(MAP_STYLES.keys()),
+        index=1,  # default to Streets
+        key=f"{key_prefix}_map_style",
     )
-    return MAPBOX_STYLES[choice]
+    return MAP_STYLES[choice]
 
 
 # ── Moran's I ────────────────────────────────────────────────────────────────
@@ -128,7 +137,7 @@ def render_moran_analysis(
     geojson: dict,
     featureidkey: str,
     key_prefix: str,
-    mapbox_style: str = "streets-v12",
+    map_style: str = "streets",
 ):
     """
     Render a complete Moran's I spatial autocorrelation section:
@@ -222,7 +231,7 @@ def render_moran_analysis(
             margin={"t": 30, "b": 0},
             legend=dict(orientation="h", yanchor="bottom", y=-0.3),
         )
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.plotly_chart(fig_scatter, width="stretch")
 
     # ── 3. LISA cluster map ──────────────────────────────────────────────
     with col_map:
@@ -233,7 +242,7 @@ def render_moran_analysis(
             value_col: valid[value_col].values,
         })
 
-        fig_lisa = px.choropleth_mapbox(
+        fig_lisa = px.choropleth_map(
             lisa_df, geojson=geojson,
             locations=id_col, featureidkey=featureidkey,
             color="LISA Cluster",
@@ -241,7 +250,7 @@ def render_moran_analysis(
             category_orders={"LISA Cluster": [
                 "HH (Hot Spot)", "HL", "LH", "LL (Cold Spot)", "Not Significant"
             ]},
-            mapbox_style=mapbox_style,
+            map_style=map_style,
             zoom=9, center={"lat": 41.8358, "lon": -87.6877},
             opacity=0.7,
             hover_name=name_col,
@@ -252,4 +261,4 @@ def render_moran_analysis(
             margin={"r": 0, "t": 30, "l": 0, "b": 0},
             legend=dict(orientation="h", yanchor="bottom", y=-0.15),
         )
-        st.plotly_chart(fig_lisa, use_container_width=True)
+        st.plotly_chart(fig_lisa, width="stretch")

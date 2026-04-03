@@ -156,16 +156,16 @@ def render(chicago_geo, area_map):
     with col_map1:
         crime_map_type = st.selectbox("Crime type (historical map)", crime_cols, key="crime_map_select")
         map_data = pivot.groupby('Community Area Name')[crime_map_type].sum().reset_index()
-        fig = px.choropleth_mapbox(
+        fig = px.choropleth_map(
             map_data, geojson=chicago_geo,
             locations='Community Area Name', featureidkey="properties.community",
             color=crime_map_type, color_continuous_scale="Reds",
-            mapbox_style=mapbox_style, zoom=9,
+            map_style=mapbox_style, zoom=9,
             center={"lat": 41.8781, "lon": -87.6298}, opacity=0.5,
             labels={crime_map_type: "Crime Count"}
         )
         fig.update_coloraxes(colorbar_tickformat='.2f')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with col_map2:
         crime_pred_type = st.selectbox("Crime type (predicted map)", crime_cols, key="crime_map_pred_select")
@@ -184,17 +184,17 @@ def render(chicago_geo, area_map):
                 pred_model.fit(pred_data[lag_cols], pred_data[crime_pred_type_upper])
                 latest_month = pivot.groupby('Community Area Name').tail(1).copy()
                 latest_month['Predicted'] = pred_model.predict(latest_month[lag_cols].fillna(0)).round(2)
-                fig_pred = px.choropleth_mapbox(
+                fig_pred = px.choropleth_map(
                     latest_month[['Community Area Name', 'Predicted']],
                     geojson=chicago_geo,
                     locations='Community Area Name', featureidkey="properties.community",
                     color='Predicted', color_continuous_scale="Reds",
-                    mapbox_style=mapbox_style, zoom=9,
+                    map_style=mapbox_style, zoom=9,
                     center={"lat": 41.8781, "lon": -87.6298}, opacity=0.5,
                     labels={'Predicted': f'Predicted {crime_pred_type} Count'}
                 )
                 fig_pred.update_coloraxes(colorbar_tickformat='.2f')
-                st.plotly_chart(fig_pred, use_container_width=True)
+                st.plotly_chart(fig_pred, width="stretch")
 
                 # ── Predicted map summary ─────────────────────────────────────
                 top_pred = latest_month.nlargest(3, "Predicted")[["Community Area Name", "Predicted"]]
@@ -237,7 +237,7 @@ def render(chicago_geo, area_map):
             showlegend=False,
             margin={"t": 40, "b": 0},
         )
-        st.plotly_chart(fig_sc1, use_container_width=True)
+        st.plotly_chart(fig_sc1, width="stretch")
 
     with scatter_col2:
         # Build predicted vs actual scatter if predictions are available
@@ -285,7 +285,7 @@ def render(chicago_geo, area_map):
                     showlegend=False,
                     margin={"t": 40, "b": 0},
                 )
-                st.plotly_chart(fig_sc2, use_container_width=True)
+                st.plotly_chart(fig_sc2, width="stretch")
             else:
                 st.info("Not enough data to produce an actual vs predicted scatterplot.")
         else:
@@ -317,7 +317,7 @@ def render(chicago_geo, area_map):
                 geojson=chicago_geo,
                 featureidkey="properties.area_num_1",
                 key_prefix="safety_moran",
-                mapbox_style=mapbox_style,
+                map_style=mapbox_style,
             )
         else:
             st.warning("Not enough community areas with data to compute Moran's I (need at least 10).")
