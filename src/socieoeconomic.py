@@ -176,11 +176,11 @@ def render():
 
             geojson_dict = merged.__geo_interface__
 
-            fig_main = px.choropleth_mapbox(
+            fig_main = px.choropleth_map(
                 merged, geojson=geojson_dict,
                 locations="area_num_1", featureidkey="properties.area_num_1",
                 color=chosen_col, color_continuous_scale="YlOrRd",
-                mapbox_style=mapbox_style,
+                map_style=mapbox_style,
                 zoom=9, center={"lat": 41.85, "lon": -87.68},
                 opacity=0.7,
                 hover_name="community",
@@ -189,7 +189,7 @@ def render():
                 title=model_choice,
             )
             fig_main.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=620)
-            st.plotly_chart(fig_main, use_container_width=True)
+            st.plotly_chart(fig_main, width="stretch")
 
             st.markdown("**Predicted Hardship Index - Side by Side**")
             st.caption("Left: Random Forest. Right: Gradient Boosting. Hover any area to compare values.")
@@ -200,11 +200,11 @@ def render():
                 (right_col, "GB_Predicted", "Gradient Boosting Predicted"),
             ]:
                 with col:
-                    fig_pred = px.choropleth_mapbox(
+                    fig_pred = px.choropleth_map(
                         merged, geojson=geojson_dict,
                         locations="area_num_1", featureidkey="properties.area_num_1",
                         color=pred_col, color_continuous_scale="YlOrRd",
-                        mapbox_style=mapbox_style,
+                        map_style=mapbox_style,
                         zoom=9, center={"lat": 41.85, "lon": -87.68},
                         opacity=0.7,
                         hover_name="community",
@@ -212,7 +212,7 @@ def render():
                         title=label,
                     )
                     fig_pred.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=480)
-                    st.plotly_chart(fig_pred, use_container_width=True)
+                    st.plotly_chart(fig_pred, width="stretch")
         else:
             st.info("Load `censusChicago.csv` to view this tab.")
 
@@ -381,7 +381,7 @@ def render():
                         "HARDSHIP INDEX": "Hardship Index"},
             )
             fig_pov.update_layout(margin={"t": 30})
-            st.plotly_chart(fig_pov, use_container_width=True)
+            st.plotly_chart(fig_pov, width="stretch")
 
         with col_sc2:
             fig_inc = px.scatter(
@@ -394,7 +394,7 @@ def render():
                         "HARDSHIP INDEX": "Hardship Index"},
             )
             fig_inc.update_layout(margin={"t": 30})
-            st.plotly_chart(fig_inc, use_container_width=True)
+            st.plotly_chart(fig_inc, width="stretch")
 
         st.info(
             "**Socioeconomic relationships:** Higher poverty rates strongly correlate with higher hardship scores. "
@@ -422,7 +422,7 @@ def render():
                 geojson=geojson_dict_moran,
                 featureidkey="properties.area_num_1",
                 key_prefix="socio_moran",
-                mapbox_style=mapbox_style,
+                map_style=mapbox_style,
             )
         except Exception as exc:
             st.warning(f"Could not compute spatial autocorrelation: {exc}")

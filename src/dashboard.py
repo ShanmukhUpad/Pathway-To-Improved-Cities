@@ -31,7 +31,7 @@ with st.sidebar:
         f"**Crash data** — last updated: `{data_fetcher.last_updated(data_fetcher.CRASH_OUT)}`"
     )
 
-    if st.button("Refresh from Chicago Data Portal", use_container_width=True):
+    if st.button("Refresh from Chicago Data Portal", width="stretch"):
         with st.spinner("Fetching latest data…"):
             try:
                 data_fetcher.refresh_all(force=True)

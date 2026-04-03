@@ -99,7 +99,7 @@ def render():
 
     with col_bmap:
         if map_utils.MAPBOX_TOKEN:
-            fig_bmap = go.Figure(go.Scattermapbox(
+            fig_bmap = go.Figure(go.Scattermap(
                 lat=bus["latitude"],
                 lon=bus["longitude"],
                 mode="markers",
@@ -109,23 +109,23 @@ def render():
                 cluster=dict(enabled=True, maxzoom=12, step=50),
             ))
             fig_bmap.update_layout(
-                mapbox=dict(style=mapbox_style, center=dict(lat=41.8358, lon=-87.6877), zoom=9.5),
+                map=dict(style=mapbox_style, center=dict(lat=41.8358, lon=-87.6877), zoom=9.5),
                 margin={"r": 0, "t": 30, "l": 0, "b": 0},
                 title="Bus Stops by Ward (Clustered)",
                 showlegend=False, height=420,
             )
         else:
-            fig_bmap = px.scatter_mapbox(
+            fig_bmap = px.scatter_map(
                 bus, lat="latitude", lon="longitude", color="ward",
                 hover_name="cta_stop_name",
                 hover_data={"routes": True, "ward": True},
                 title="Bus Stops by Ward",
-                mapbox_style=mapbox_style, zoom=9.5,
+                map_style=mapbox_style, zoom=9.5,
                 center={"lat": 41.8358, "lon": -87.6877}, height=420,
             )
             fig_bmap.update_traces(marker_size=4)
             fig_bmap.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, showlegend=False)
-        st.plotly_chart(fig_bmap, use_container_width=True)
+        st.plotly_chart(fig_bmap, width="stretch")
 
     with col_bbar:
         top_wards = bus_per_ward.sort_values("num_stops", ascending=False).head(20)
@@ -141,7 +141,7 @@ def render():
             yaxis={"categoryorder": "total ascending", "title": "Ward"},
             coloraxis_showscale=False,
         )
-        st.plotly_chart(fig_bbar, use_container_width=True)
+        st.plotly_chart(fig_bbar, width="stretch")
 
     fig_routes = px.bar(
         bus_per_ward.sort_values("avg_routes_per_stop", ascending=False).head(20),
@@ -153,7 +153,7 @@ def render():
         color="avg_routes_per_stop", color_continuous_scale="Blues",
     )
     fig_routes.update_layout(coloraxis_showscale=False, xaxis_title="Ward")
-    st.plotly_chart(fig_routes, use_container_width=True)
+    st.plotly_chart(fig_routes, width="stretch")
 
     top_bus_ward    = bus_per_ward.loc[bus_per_ward["num_stops"].idxmax()]
     bottom_bus_ward = bus_per_ward.loc[bus_per_ward["num_stops"].idxmin()]
@@ -172,7 +172,7 @@ def render():
     col_dmap, col_dhist = st.columns([3, 2])
 
     with col_dmap:
-        fig_dmap = px.scatter_mapbox(
+        fig_dmap = px.scatter_map(
             divvy,
             lat="latitude", lon="longitude",
             color="utilization_ratio",
@@ -184,14 +184,14 @@ def render():
                 "utilization_ratio": ":.2f",
             },
             title="Divvy Stations (In Service) - Utilization Ratio",
-            mapbox_style=mapbox_style,
+            map_style=mapbox_style,
             zoom=9.5,
             center={"lat": 41.8358, "lon": -87.6877},
             height=420,
         )
         fig_dmap.update_traces(marker_size=6)
         fig_dmap.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0})
-        st.plotly_chart(fig_dmap, use_container_width=True)
+        st.plotly_chart(fig_dmap, width="stretch")
 
     with col_dhist:
         fig_util = px.histogram(
@@ -203,7 +203,7 @@ def render():
             height=195,
         )
         fig_util.update_layout(margin={"t": 30})
-        st.plotly_chart(fig_util, use_container_width=True)
+        st.plotly_chart(fig_util, width="stretch")
 
         fig_docks = px.histogram(
             divvy, x="total_docks",
@@ -214,7 +214,7 @@ def render():
             height=195,
         )
         fig_docks.update_layout(margin={"t": 30})
-        st.plotly_chart(fig_docks, use_container_width=True)
+        st.plotly_chart(fig_docks, width="stretch")
 
     avg_util         = divvy["utilization_ratio"].mean()
     near_capacity    = (divvy["utilization_ratio"] >= 0.9).sum()
@@ -247,7 +247,7 @@ def render():
             yaxis={"categoryorder": "total ascending"},
             coloraxis_showscale=False,
         )
-        st.plotly_chart(fig_rt, use_container_width=True)
+        st.plotly_chart(fig_rt, width="stretch")
 
     with col_cfl:
         cfl_counts = (
@@ -262,7 +262,7 @@ def render():
             title="Contraflow Route Presence",
             color_discrete_sequence=["#31a354", "#a1d99b"],
         )
-        st.plotly_chart(fig_cfl, use_container_width=True)
+        st.plotly_chart(fig_cfl, width="stretch")
 
     top_route_type  = route_counts.iloc[0]["Route Type"]
     top_route_pct   = route_counts.iloc[0]["Count"] / route_counts["Count"].sum() * 100
@@ -289,7 +289,7 @@ def render():
             labels={"num_stops": "Number of Bus Stops", "num_stations": "Number of Divvy Stations"},
         )
         fig_s1.update_layout(coloraxis_showscale=False, margin={"t": 30})
-        st.plotly_chart(fig_s1, use_container_width=True)
+        st.plotly_chart(fig_s1, width="stretch")
 
     with col_s2:
         fig_s2 = px.scatter(
@@ -300,7 +300,7 @@ def render():
             labels={"avg_routes_per_stop": "Avg Routes per Stop", "avg_docks": "Avg Docks per Station"},
         )
         fig_s2.update_layout(margin={"t": 30})
-        st.plotly_chart(fig_s2, use_container_width=True)
+        st.plotly_chart(fig_s2, width="stretch")
 
     st.info(
         "**Transit relationship insight:** These scatterplots reveal whether bus and bike-share infrastructure "
@@ -333,7 +333,7 @@ def render():
             color_continuous_scale="RdYlGn",
         )
         fig_acc.update_layout(coloraxis_showscale=False, xaxis_title="Ward")
-        st.plotly_chart(fig_acc, use_container_width=True)
+        st.plotly_chart(fig_acc, width="stretch")
 
     with col_us:
         st.metric(
@@ -346,7 +346,7 @@ def render():
                 underserved[["ward", "num_stops", "num_stations", "accessibility_score"]]
                 .sort_values("accessibility_score")
                 .reset_index(drop=True),
-                use_container_width=True,
+                width="stretch",
                 height=300,
             )
 
@@ -384,7 +384,7 @@ def render():
                 geojson=ward_geojson,
                 featureidkey="properties.ward",
                 key_prefix="transport_moran",
-                mapbox_style=mapbox_style,
+                map_style=mapbox_style,
             )
     except Exception as exc:
         st.warning(f"Could not compute spatial autocorrelation: {exc}")
