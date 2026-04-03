@@ -252,7 +252,7 @@ def render(chicago_geo=None):
     st.divider()
     st.subheader("Crash Location Density")
     path = _resolve_crash_csv()
-    if path:
+    if path and chicago_geo:
         try:
             raw_coords = pd.read_csv(path, usecols=["LATITUDE", "LONGITUDE"], low_memory=False)
             raw_coords["LATITUDE"] = pd.to_numeric(raw_coords["LATITUDE"], errors="coerce")
@@ -261,23 +261,47 @@ def render(chicago_geo=None):
             coords = coords[(coords["LATITUDE"] > 41.6) & (coords["LATITUDE"] < 42.1)]
 
             if not coords.empty:
-                fig_density = px.density_map(
-                    coords, lat="LATITUDE", lon="LONGITUDE",
-                    radius=6, map_style=mapbox_style,
+                # Spatial join to count crashes per community area
+                geo_url = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
+                gdf_ca = gpd.read_file(geo_url)
+                gdf_ca["area_num_1"] = gdf_ca["area_num_1"].astype(int)
+
+                crash_pts = gpd.GeoDataFrame(
+                    coords,
+                    geometry=gpd.points_from_xy(coords["LONGITUDE"], coords["LATITUDE"]),
+                    crs="EPSG:4326",
+                )
+                joined = gpd.sjoin(crash_pts, gdf_ca[["area_num_1", "community", "geometry"]],
+                                   how="inner", predicate="within")
+                crash_counts = joined.groupby(["area_num_1", "community"]).size().reset_index(name="Crash Count")
+                crash_counts["area_num_1"] = crash_counts["area_num_1"].astype(str)
+
+                fig_density = px.choropleth_map(
+                    crash_counts, geojson=chicago_geo,
+                    locations="area_num_1", featureidkey="properties.area_num_1",
+                    color="Crash Count", color_continuous_scale="YlOrRd",
+                    map_style=mapbox_style,
                     zoom=9.5, center={"lat": 41.8358, "lon": -87.6877},
-                    title="Crash Density Heatmap",
-                    color_continuous_scale="YlOrRd",
+                    hover_name="community",
+                    hover_data={"Crash Count": True, "area_num_1": False},
+                    title="Crashes by Community Area",
+                    opacity=0.7,
                 )
                 fig_density.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
                 st.plotly_chart(fig_density, width="stretch")
 
-                st.info(
-                    "**Crash density map:** Darker/warmer areas indicate higher concentrations of crashes. "
-                    "These hotspots should be prioritized for safety interventions such as traffic calming, "
-                    "signal improvements, or enforcement."
+                top3 = crash_counts.nlargest(3, "Crash Count")
+                top_names = ", ".join(
+                    f"**{r['community']}** ({r['Crash Count']:,})"
+                    for _, r in top3.iterrows()
                 )
-        except Exception:
-            st.warning("Could not load coordinates for density map.")
+                st.info(
+                    f"**Crash hotspots by community area:** The highest crash counts are in {top_names}. "
+                    "These areas should be prioritized for safety interventions such as traffic calming, "
+                    "signal improvements, or targeted enforcement."
+                )
+        except Exception as exc:
+            st.warning(f"Could not load crash location data: {exc}")
 
     st.divider()
 
