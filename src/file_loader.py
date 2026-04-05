@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import geopandas as gpd
 import ml_predictor
+import map_utils
 
 MIN_MATCH_COUNT = 4  # require at least 4 domain columns + lat/lon
 
@@ -251,7 +252,7 @@ def _find_name_col(df):
 
 # ── Choropleth / scatter map ──────────────────────────────────────────────────
 
-def _render_map(df, lat_col, lon_col, attr, domain):
+def _render_map(df, lat_col, lon_col, attr, domain, map_style="open-street-map"):
     """Render a choropleth (if CA column found) or scatter map."""
     ca_col = _find_ca_number_col(df)
     if ca_col:
@@ -263,16 +264,16 @@ def _render_map(df, lat_col, lon_col, attr, domain):
                 .dropna().astype(int).astype(str)
             )
             plot_df = plot_df.groupby(ca_col, as_index=False)[attr].mean()
-            fig = px.choropleth_mapbox(
+            fig = px.choropleth_map(
                 plot_df, geojson=geojson, locations=ca_col,
                 featureidkey="properties.area_numbe",
                 color=attr, color_continuous_scale="Viridis",
-                mapbox_style="open-street-map", zoom=8.5,
+                map_style=map_style, zoom=8.5,
                 center={"lat": 41.8358, "lon": -87.6877}, opacity=0.7,
                 labels={attr: attr}, title=f"{attr} - uploaded dataset",
             )
             fig.update_layout(margin={"r": 0, "t": 40, "l": 0, "b": 0})
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             return
         except Exception as exc:
             st.warning(f"Choropleth failed ({exc}). Falling back to scatter map.")
@@ -286,14 +287,14 @@ def _render_map(df, lat_col, lon_col, attr, domain):
         st.warning("No rows with valid lat/lon and attribute values.")
         return
 
-    fig = px.scatter_mapbox(
+    fig = px.scatter_map(
         plot_df, lat=lat_col, lon=lon_col, color=attr,
-        color_continuous_scale="Viridis", mapbox_style="open-street-map",
+        color_continuous_scale="Viridis", map_style=map_style,
         zoom=10, center={"lat": plot_df[lat_col].median(), "lon": plot_df[lon_col].median()},
         opacity=0.6, labels={attr: attr}, title=f"{attr} - uploaded dataset",
     )
     fig.update_layout(margin={"r": 0, "t": 40, "l": 0, "b": 0})
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 # ── Full upload analysis pipeline ─────────────────────────────────────────────
@@ -326,8 +327,10 @@ def _render_upload_analysis(df, lat_col, lon_col, domain):
         key=f"upload_attr_{domain}",
     )
 
+    upload_mapbox_style = map_utils.mapbox_style_picker(key_prefix=f"upload_{domain}")
+
     # ── 1. Map ────────────────────────────────────────────────────────────────
-    _render_map(df, lat_col, lon_col, attr, domain)
+    _render_map(df, lat_col, lon_col, attr, domain, map_style=upload_mapbox_style)
 
     st.divider()
 
@@ -349,7 +352,7 @@ def _render_upload_analysis(df, lat_col, lon_col, domain):
             color_discrete_sequence=["#4f8ef7"],
         )
         fig_hist.update_layout(margin={"t": 30})
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
 
     with col_stats:
         st.metric("Mean",    f"{mean_val:.2f}")
@@ -392,13 +395,13 @@ def _render_upload_analysis(df, lat_col, lon_col, domain):
         st.markdown(f"**Top 5 by {attr}**")
         st.dataframe(
             df.nlargest(5, attr)[display_cols].reset_index(drop=True),
-            use_container_width=True,
+            width="stretch",
         )
     with col_bot:
         st.markdown(f"**Bottom 5 by {attr}**")
         st.dataframe(
             df.nsmallest(5, attr)[display_cols].reset_index(drop=True),
-            use_container_width=True,
+            width="stretch",
         )
 
     # ── 5. ML predictor ───────────────────────────────────────────────────────

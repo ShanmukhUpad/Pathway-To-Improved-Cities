@@ -196,7 +196,7 @@ def render_predictor(
     fig_imp.update_layout(
         yaxis={"categoryorder": "total ascending"}, coloraxis_showscale=False
     )
-    st.plotly_chart(fig_imp, use_container_width=True)
+    st.plotly_chart(fig_imp, width="stretch")
 
     top_feature     = imp_df.iloc[0]["Feature"]
     top_importance  = imp_df.iloc[0]["Importance"]
@@ -265,6 +265,6 @@ def render_predictor(
                     color_continuous_scale="Blues",
                 )
                 fig_p.update_layout(coloraxis_showscale=False)
-                st.plotly_chart(fig_p, use_container_width=True)
+                st.plotly_chart(fig_p, width="stretch")
             else:
                 st.success(f"**Predicted {target}:** `{pred:.4f}`")

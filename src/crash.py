@@ -1,10 +1,13 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import geopandas as gpd
 import os
 import file_loader
 import ml_predictor
+import map_utils
 
 _SRC = os.path.dirname(os.path.abspath(__file__))
 # Prefer the auto-fetched file; fall back to the bundled snapshot
@@ -165,6 +168,8 @@ def render(chicago_geo=None):
         "crash types, and damage severity."
     )
 
+    mapbox_style = map_utils.mapbox_style_picker(key_prefix="crash")
+
     with st.expander("Upload a supplemental dataset"):
         file_loader.uploader(
             domain="transportation",
@@ -204,7 +209,7 @@ def render(chicago_geo=None):
             color='Crashes', color_continuous_scale='Oranges'
         )
         fig_h.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig_h, use_container_width=True)
+        st.plotly_chart(fig_h, width="stretch")
 
     with col_d:
         daily = df1.groupby('CRASH_DAY_OF_WEEK').size().reset_index(name='Crashes')
@@ -217,7 +222,7 @@ def render(chicago_geo=None):
             category_orders={'Day': list(DAY_LABELS.values())}
         )
         fig_d.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig_d, use_container_width=True)
+        st.plotly_chart(fig_d, width="stretch")
 
     with col_m:
         monthly = df1.groupby('CRASH_MONTH').size().reset_index(name='Crashes')
@@ -230,7 +235,7 @@ def render(chicago_geo=None):
             category_orders={'Month': list(MONTH_LABELS.values())}
         )
         fig_m.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig_m, use_container_width=True)
+        st.plotly_chart(fig_m, width="stretch")
 
     # ── Timing summary ───────────────────────────────────────────────────────
     peak_hour = hourly.loc[hourly["Crashes"].idxmax(), "CRASH_HOUR"]
@@ -242,6 +247,61 @@ def render(chicago_geo=None):
         f"peak day is **{peak_day}**, and peak month is **{peak_month}**. "
         "Targeted enforcement and road safety campaigns during these windows could meaningfully reduce crash frequency."
     )
+
+    # ── Crash Density Heatmap ───────────────────────────────────────────────
+    st.divider()
+    st.subheader("Crash Location Density")
+    path = _resolve_crash_csv()
+    if path and chicago_geo:
+        try:
+            raw_coords = pd.read_csv(path, usecols=["LATITUDE", "LONGITUDE"], low_memory=False)
+            raw_coords["LATITUDE"] = pd.to_numeric(raw_coords["LATITUDE"], errors="coerce")
+            raw_coords["LONGITUDE"] = pd.to_numeric(raw_coords["LONGITUDE"], errors="coerce")
+            coords = raw_coords.dropna(subset=["LATITUDE", "LONGITUDE"])
+            coords = coords[(coords["LATITUDE"] > 41.6) & (coords["LATITUDE"] < 42.1)]
+
+            if not coords.empty:
+                # Spatial join to count crashes per community area
+                geo_url = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
+                gdf_ca = gpd.read_file(geo_url)
+                gdf_ca["area_num_1"] = gdf_ca["area_num_1"].astype(int)
+
+                crash_pts = gpd.GeoDataFrame(
+                    coords,
+                    geometry=gpd.points_from_xy(coords["LONGITUDE"], coords["LATITUDE"]),
+                    crs="EPSG:4326",
+                )
+                joined = gpd.sjoin(crash_pts, gdf_ca[["area_num_1", "community", "geometry"]],
+                                   how="inner", predicate="within")
+                crash_counts = joined.groupby(["area_num_1", "community"]).size().reset_index(name="Crash Count")
+                crash_counts["area_num_1"] = crash_counts["area_num_1"].astype(str)
+
+                fig_density = px.choropleth_map(
+                    crash_counts, geojson=chicago_geo,
+                    locations="area_num_1", featureidkey="properties.area_num_1",
+                    color="Crash Count", color_continuous_scale="YlOrRd",
+                    map_style=mapbox_style,
+                    zoom=9.5, center={"lat": 41.8358, "lon": -87.6877},
+                    hover_name="community",
+                    hover_data={"Crash Count": True, "area_num_1": False},
+                    title="Crashes by Community Area",
+                    opacity=0.7,
+                )
+                fig_density.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
+                st.plotly_chart(fig_density, width="stretch")
+
+                top3 = crash_counts.nlargest(3, "Crash Count")
+                top_names = ", ".join(
+                    f"**{r['community']}** ({r['Crash Count']:,})"
+                    for _, r in top3.iterrows()
+                )
+                st.info(
+                    f"**Crash hotspots by community area:** The highest crash counts are in {top_names}. "
+                    "These areas should be prioritized for safety interventions such as traffic calming, "
+                    "signal improvements, or targeted enforcement."
+                )
+        except Exception as exc:
+            st.warning(f"Could not load crash location data: {exc}")
 
     st.divider()
 
@@ -275,7 +335,7 @@ def render(chicago_geo=None):
         yaxis={'categoryorder': 'total ascending'},
         coloraxis_showscale=False
     )
-    st.plotly_chart(fig_cond, use_container_width=True)
+    st.plotly_chart(fig_cond, width="stretch")
 
     top_cond       = cond_counts.iloc[0][selected_condition]
     top_cond_count = cond_counts.iloc[0]["Crashes"]
@@ -306,7 +366,7 @@ def render(chicago_geo=None):
             yaxis={'categoryorder': 'total ascending'},
             coloraxis_showscale=False
         )
-        st.plotly_chart(fig_ct, use_container_width=True)
+        st.plotly_chart(fig_ct, width="stretch")
 
     with col_tw:
         tw_counts = df2['TRAFFICWAY_TYPE'].value_counts().head(12).reset_index()
@@ -320,7 +380,7 @@ def render(chicago_geo=None):
             yaxis={'categoryorder': 'total ascending'},
             coloraxis_showscale=False
         )
-        st.plotly_chart(fig_tw, use_container_width=True)
+        st.plotly_chart(fig_tw, width="stretch")
 
     top_crash_type = ct_counts.iloc[0]["Crash Type"]
     top_crash_pct  = ct_counts.iloc[0]["Count"] / ct_counts["Count"].sum() * 100
@@ -350,7 +410,7 @@ def render(chicago_geo=None):
             title='Crash Distribution by Damage Level',
             color_discrete_sequence=px.colors.sequential.Oranges[2:]
         )
-        st.plotly_chart(fig_dmg, use_container_width=True)
+        st.plotly_chart(fig_dmg, width="stretch")
 
     with col_hr:
         hr_counts = (
@@ -366,7 +426,7 @@ def render(chicago_geo=None):
             title='Hit and Run vs. Not Hit and Run',
             color_discrete_sequence=['#fd8d3c', '#fdbe85']
         )
-        st.plotly_chart(fig_hr, use_container_width=True)
+        st.plotly_chart(fig_hr, width="stretch")
 
     over_1500_pct = dmg_counts.loc[dmg_counts["Damage Level"] == "OVER $1,500", "Crashes"].sum() / dmg_counts["Crashes"].sum() * 100
     hr_pct        = df2["HIT_AND_RUN_I"].str.upper().str.strip().eq("Y").mean() * 100
@@ -393,7 +453,7 @@ def render(chicago_geo=None):
             color='Crashes', color_continuous_scale='Oranges'
         )
         fig_sp.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig_sp, use_container_width=True)
+        st.plotly_chart(fig_sp, width="stretch")
 
     with col_ln:
         lane_counts = df1['LANE_CNT'].value_counts().sort_index().reset_index()
@@ -404,7 +464,7 @@ def render(chicago_geo=None):
             color='Crashes', color_continuous_scale='Oranges'
         )
         fig_ln.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig_ln, use_container_width=True)
+        st.plotly_chart(fig_ln, width="stretch")
 
     st.divider()
 
@@ -426,7 +486,7 @@ def render(chicago_geo=None):
             title='Intersection vs. Non-Intersection Crashes',
             color_discrete_sequence=['#e6550d', '#fdae6b']
         )
-        st.plotly_chart(fig_int, use_container_width=True)
+        st.plotly_chart(fig_int, width="stretch")
 
     with col_units:
         unit_counts = df2['NUM_UNITS'].value_counts().sort_index().reset_index()
@@ -437,9 +497,88 @@ def render(chicago_geo=None):
             color='Crashes', color_continuous_scale='Oranges'
         )
         fig_units.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig_units, use_container_width=True)
+        st.plotly_chart(fig_units, width="stretch")
 
-    # ── Section 7: ML Predictions ─────────────────────────────────────────────
+    # ── Section 7: Scatterplots ────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Speed and Lane Analysis Scatterplots")
+    scatter_sample = df1.sample(min(5000, len(df1)), random_state=42) if len(df1) > 5000 else df1
+    col_sc1, col_sc2 = st.columns(2)
+
+    with col_sc1:
+        fig_sc1 = px.scatter(
+            scatter_sample, x="POSTED_SPEED_LIMIT", y="CRASH_HOUR",
+            color="LIGHTING_CONDITION",
+            title="Speed Limit vs Crash Hour by Lighting",
+            labels={"POSTED_SPEED_LIMIT": "Posted Speed Limit (mph)", "CRASH_HOUR": "Hour of Day"},
+            opacity=0.4,
+        )
+        fig_sc1.update_layout(margin={"t": 30}, legend=dict(orientation="h", yanchor="bottom", y=-0.4))
+        st.plotly_chart(fig_sc1, width="stretch")
+
+    with col_sc2:
+        fig_sc2 = px.scatter(
+            scatter_sample, x="LANE_CNT", y="POSTED_SPEED_LIMIT",
+            color="ROADWAY_SURFACE_COND",
+            title="Lane Count vs Speed Limit by Surface Condition",
+            labels={"LANE_CNT": "Number of Lanes", "POSTED_SPEED_LIMIT": "Speed Limit (mph)"},
+            opacity=0.4,
+        )
+        fig_sc2.update_layout(margin={"t": 30}, legend=dict(orientation="h", yanchor="bottom", y=-0.4))
+        st.plotly_chart(fig_sc2, width="stretch")
+
+    st.info(
+        "**Scatter analysis:** These plots reveal relationships between road design and crash timing. "
+        "Clusters at specific speed-hour combinations highlight when certain road types are most dangerous."
+    )
+
+    # ── Section 8: Moran's I Spatial Autocorrelation ─────────────────────────
+    st.divider()
+    try:
+        if path:
+            raw_for_moran = pd.read_csv(path, usecols=["LATITUDE", "LONGITUDE"], low_memory=False)
+            raw_for_moran["LATITUDE"] = pd.to_numeric(raw_for_moran["LATITUDE"], errors="coerce")
+            raw_for_moran["LONGITUDE"] = pd.to_numeric(raw_for_moran["LONGITUDE"], errors="coerce")
+            raw_for_moran = raw_for_moran.dropna(subset=["LATITUDE", "LONGITUDE"])
+            raw_for_moran = raw_for_moran[
+                (raw_for_moran["LATITUDE"] > 41.6) & (raw_for_moran["LATITUDE"] < 42.1)
+            ]
+
+            if len(raw_for_moran) > 100:
+                geo_url = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
+                gdf_ca = gpd.read_file(geo_url)
+                gdf_ca["area_num_1"] = gdf_ca["area_num_1"].astype(int)
+
+                crash_points = gpd.GeoDataFrame(
+                    raw_for_moran,
+                    geometry=gpd.points_from_xy(raw_for_moran["LONGITUDE"], raw_for_moran["LATITUDE"]),
+                    crs="EPSG:4326",
+                )
+                joined = gpd.sjoin(
+                    crash_points,
+                    gdf_ca[["area_num_1", "community", "geometry"]],
+                    how="inner", predicate="within",
+                )
+                crash_by_ca = joined.groupby("area_num_1").size().reset_index(name="crash_count")
+                gdf_merged = gdf_ca.merge(crash_by_ca, on="area_num_1", how="inner")
+                gdf_merged["area_num_str"] = gdf_merged["area_num_1"].astype(str)
+
+                if len(gdf_merged) >= 10 and chicago_geo:
+                    map_utils.render_moran_analysis(
+                        gdf=gdf_merged,
+                        value_col="crash_count",
+                        name_col="community",
+                        id_col="area_num_str",
+                        geojson=chicago_geo,
+                        featureidkey="properties.area_num_1",
+                        key_prefix="crash_moran",
+                        map_style=mapbox_style,
+                    )
+    except Exception as exc:
+        st.warning(f"Could not compute spatial autocorrelation: {exc}")
+
+    # ── Section 9: ML Predictions ────────────────────────────────────────────
+    st.divider()
     _CRASH_DEFAULT_FEATURES = [
         'WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND',
         'POSTED_SPEED_LIMIT', 'TRAFFICWAY_TYPE', 'INTERSECTION_RELATED_I',

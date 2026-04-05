@@ -8,11 +8,14 @@ import public_safety
 import socieoeconomic
 import data_fetcher
 import transportation_access
+import map_utils
 
 st.set_page_config(
     page_title="Pathway to Improved Cities",
     layout="wide"
 )
+
+map_utils.init_mapbox()
 
 st.title("Pathway to Improved Cities Dashboard")
 
@@ -28,7 +31,7 @@ with st.sidebar:
         f"**Crash data** — last updated: `{data_fetcher.last_updated(data_fetcher.CRASH_OUT)}`"
     )
 
-    if st.button("Refresh from Chicago Data Portal", use_container_width=True):
+    if st.button("Refresh from Chicago Data Portal", width="stretch"):
         with st.spinner("Fetching latest data…"):
             try:
                 data_fetcher.refresh_all(force=True)
