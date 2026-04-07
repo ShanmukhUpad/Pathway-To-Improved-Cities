@@ -8,7 +8,7 @@ YELLOW="\033[1;33m"
 BLUE="\033[0;34m"
 NC="\033[0m" # No Color
 
-PYTHON_VERSION="3.14.0"
+PYTHON_VERSION="3.11.0"
 VENV_DIR="venv"
 
 echo -e "${BLUE}=== Checking for Python >= $PYTHON_VERSION ===${NC}"

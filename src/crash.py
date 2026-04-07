@@ -17,6 +17,10 @@ from sklearn.metrics import (
     roc_curve,
     confusion_matrix,
 )
+#Fixing SSL certificate issues
+import ssl
+import urllib.request
+
 
 _SRC = os.path.dirname(os.path.abspath(__file__))
 CRASH_CSV_LATEST = os.path.join(_SRC, "traffic_crashes_latest.csv")
@@ -104,7 +108,7 @@ def load_crash_data():
     df2 = df[[
         'FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
         'ROADWAY_SURFACE_COND', 'POSTED_SPEED_LIMIT', 'TRAFFICWAY_TYPE',
-        'INTERSECTION_RELATED_I', 'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'DAMAGE', 'NUM_UNITS',
+        'INTERSECTION_RELATED_I', 'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'CRASH_MONTH', 'DAMAGE', 'NUM_UNITS',
         'HIT_AND_RUN_I'
     ]].copy()
 
@@ -162,7 +166,7 @@ def _split_and_clean(df):
     df2 = df[[
         'FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
         'ROADWAY_SURFACE_COND', 'POSTED_SPEED_LIMIT', 'TRAFFICWAY_TYPE',
-        'INTERSECTION_RELATED_I', 'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'DAMAGE',
+        'INTERSECTION_RELATED_I', 'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'CRASH_MONTH', 'DAMAGE',
         'NUM_UNITS', 'HIT_AND_RUN_I'
     ]].copy().dropna()
     for col in ['FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
@@ -422,7 +426,11 @@ def render(chicago_geo=None):
 
             if not coords.empty:
                 geo_url = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
-                gdf_ca  = gpd.read_file(geo_url)
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(geo_url, context=ctx) as response:
+                    gdf_ca = gpd.read_file(response)
                 gdf_ca["area_num_1"] = gdf_ca["area_num_1"].astype(int)
 
                 crash_pts = gpd.GeoDataFrame(
@@ -696,7 +704,11 @@ def render(chicago_geo=None):
 
             if len(raw_for_moran) > 100:
                 geo_url = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
-                gdf_ca  = gpd.read_file(geo_url)
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(geo_url, context=ctx) as response:
+                    gdf_ca = gpd.read_file(response)
                 gdf_ca["area_num_1"] = gdf_ca["area_num_1"].astype(int)
 
                 crash_points = gpd.GeoDataFrame(
@@ -744,7 +756,7 @@ def render(chicago_geo=None):
 
     # ── Section 10: Pre-trained models ────────────────────────────────────
     st.divider()
-    st.subheader("🧠 Pre-trained Models")
+    st.subheader("Pre-trained Models")
     st.markdown(
         "The models below were trained on the full Chicago crash dataset. "
         "The **accident occurrence model** (Random Forest) predicts whether a crash "
@@ -759,10 +771,10 @@ def render(chicago_geo=None):
     # Show a status banner for each model
     st.markdown("**Model status:**")
     s1, s2 = st.columns(2)
-    s1.success("✅ Accident occurrence model loaded" if model_acc else "❌ accident_occurrence_model.joblib not found in src/")
-    s2.success("✅ Hit-and-run model loaded"          if model_hr  else "❌ gbc_hit_and_run_model.joblib not found in src/")
+    s1.success("Accident occurrence model loaded" if model_acc else "accident_occurrence_model.joblib not found in src/")
+    s2.success("Hit-and-run model loaded"          if model_hr  else "gbc_hit_and_run_model.joblib not found in src/")
 
-    tab_eval, tab_predict = st.tabs(["📊 Model Evaluation", "🔮 Make a Prediction"])
+    tab_eval, tab_predict = st.tabs(["Model Evaluation", "Make a Prediction"])
 
     # ── Tab 1: Evaluation on live data ────────────────────────────────────
     with tab_eval:
