@@ -33,105 +33,49 @@ MONTH_LABELS = {
 # Data loading & cleaning  (notebook-faithful)
 # ──────────────────────────────────────────────
 
-@st.cache_data(show_spinner="Loading crash data...")
-def load_crash_data():
-    path = _resolve_crash_csv()
-    if path is None:
-        raise FileNotFoundError("No crash CSV found.")
-    df = pd.read_csv(path, low_memory=False)
-
-    # Parse date and extract time fields (notebook cell 4)
-    df['CRASH_DATE'] = pd.to_datetime(df['CRASH_DATE'])
-    df['CRASH_HOUR']        = df['CRASH_DATE'].dt.hour
-    df['CRASH_DAY_OF_WEEK'] = df['CRASH_DATE'].dt.dayofweek   # 0=Monday, 6=Sunday
-    df['CRASH_MONTH']       = df['CRASH_DATE'].dt.month
-
-    # ── df1: road/environment conditions (notebook cell 5) ──────────────
-    df1 = df[[
-        'WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND', 'ROAD_DEFECT',
-        'ALIGNMENT', 'TRAFFICWAY_TYPE', 'LANE_CNT', 'POSTED_SPEED_LIMIT',
-        'TRAFFIC_CONTROL_DEVICE', 'DEVICE_CONDITION', 'INTERSECTION_RELATED_I',
-        'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'CRASH_MONTH',
-        'FIRST_CRASH_TYPE'
-    ]].copy()
-
-    df1.dropna(inplace=True)
-    df1['LANE_CNT'] = pd.to_numeric(df1['LANE_CNT'], errors='coerce')
-    df1.dropna(subset=['LANE_CNT'], inplace=True)
-    df1['LANE_CNT'] = df1['LANE_CNT'].astype(int)
-
-    cat_cols_1 = [
-        'WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND', 'ROAD_DEFECT',
-        'ALIGNMENT', 'TRAFFICWAY_TYPE', 'TRAFFIC_CONTROL_DEVICE', 'DEVICE_CONDITION',
-        'FIRST_CRASH_TYPE'
-    ]
-    for col in cat_cols_1:
-        df1 = df1[df1[col].str.upper().str.strip() != 'UNKNOWN']
-        df1 = df1[df1[col].str.strip() != '']
-
-    df1 = df1[df1['INTERSECTION_RELATED_I'].str.upper().str.strip().isin(['Y', 'N'])]
-    df1 = df1[(df1['POSTED_SPEED_LIMIT'] > 0) & (df1['POSTED_SPEED_LIMIT'] <= 100)]
-    df1 = df1[(df1['LANE_CNT'] > 0) & (df1['LANE_CNT'] <= 20)]
-    df1 = df1[df1['CRASH_HOUR'].between(0, 23)]
-    df1 = df1[df1['CRASH_DAY_OF_WEEK'].between(0, 6)]
-    df1 = df1[df1['CRASH_MONTH'].between(1, 12)]
-    df1.reset_index(drop=True, inplace=True)
-
-    # ── df2: severity / damage (notebook cell 6) ────────────────────────
-    df2 = df[[
-        'FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
-        'ROADWAY_SURFACE_COND', 'POSTED_SPEED_LIMIT', 'TRAFFICWAY_TYPE',
-        'INTERSECTION_RELATED_I', 'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'DAMAGE', 'NUM_UNITS',
-        'HIT_AND_RUN_I'
-    ]].copy()
-
-    df2.dropna(inplace=True)
-
-    cat_cols_2 = [
-        'FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
-        'ROADWAY_SURFACE_COND', 'TRAFFICWAY_TYPE'
-    ]
-    for col in cat_cols_2:
-        df2 = df2[df2[col].str.upper().str.strip() != 'UNKNOWN']
-        df2 = df2[df2[col].str.strip() != '']
-
-    df2 = df2[df2['INTERSECTION_RELATED_I'].str.upper().str.strip().isin(['Y', 'N'])]
-    df2 = df2[df2['HIT_AND_RUN_I'].str.upper().str.strip().isin(['Y', 'N'])]
-    df2 = df2[df2['DAMAGE'].str.upper().str.strip().isin(['$500 OR LESS', '$501 - $1,500', 'OVER $1,500'])]
-    df2 = df2[(df2['POSTED_SPEED_LIMIT'] > 0) & (df2['POSTED_SPEED_LIMIT'] <= 100)]
-    df2 = df2[(df2['NUM_UNITS'] > 0) & (df2['NUM_UNITS'] <= 50)]
-    df2 = df2[df2['CRASH_HOUR'].between(0, 23)]
-    df2 = df2[df2['CRASH_DAY_OF_WEEK'].between(0, 6)]
-    df2.reset_index(drop=True, inplace=True)
-
-    return df1, df2
-
-
 # ──────────────────────────────────────────────
-# Main render function — called from dashboard.py
+# Shared crash cleaning helpers
 # ──────────────────────────────────────────────
 
-def _split_and_clean(df):
-    """Same cleaning as load_crash_data() but accepts a raw DataFrame directly."""
+_DF1_COLS = [
+    'WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND', 'ROAD_DEFECT',
+    'ALIGNMENT', 'TRAFFICWAY_TYPE', 'LANE_CNT', 'POSTED_SPEED_LIMIT',
+    'TRAFFIC_CONTROL_DEVICE', 'DEVICE_CONDITION', 'INTERSECTION_RELATED_I',
+    'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'CRASH_MONTH', 'FIRST_CRASH_TYPE',
+]
+
+_DF2_COLS = [
+    'FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
+    'ROADWAY_SURFACE_COND', 'POSTED_SPEED_LIMIT', 'TRAFFICWAY_TYPE',
+    'INTERSECTION_RELATED_I', 'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'DAMAGE',
+    'NUM_UNITS', 'HIT_AND_RUN_I',
+]
+
+
+def _clean_crash_df(df):
+    """
+    Parse dates, build df1 (road/conditions) and df2 (severity/damage)
+    from a raw crash DataFrame.  Used by both load_crash_data() and the
+    uploaded-file path.
+    """
     df = df.copy()
     df['CRASH_DATE'] = pd.to_datetime(df['CRASH_DATE'])
     df['CRASH_HOUR']        = df['CRASH_DATE'].dt.hour
     df['CRASH_DAY_OF_WEEK'] = df['CRASH_DATE'].dt.dayofweek
     df['CRASH_MONTH']       = df['CRASH_DATE'].dt.month
 
-    df1 = df[[
-        'WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND', 'ROAD_DEFECT',
-        'ALIGNMENT', 'TRAFFICWAY_TYPE', 'LANE_CNT', 'POSTED_SPEED_LIMIT',
-        'TRAFFIC_CONTROL_DEVICE', 'DEVICE_CONDITION', 'INTERSECTION_RELATED_I',
-        'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'CRASH_MONTH', 'FIRST_CRASH_TYPE'
-    ]].copy().dropna()
+    # ── df1: road / environment conditions ──────────────────────────────
+    df1 = df[_DF1_COLS].copy().dropna()
     df1['LANE_CNT'] = pd.to_numeric(df1['LANE_CNT'], errors='coerce')
     df1.dropna(subset=['LANE_CNT'], inplace=True)
     df1['LANE_CNT'] = df1['LANE_CNT'].astype(int)
-    for col in ['WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND', 'ROAD_DEFECT',
-                'ALIGNMENT', 'TRAFFICWAY_TYPE', 'TRAFFIC_CONTROL_DEVICE', 'DEVICE_CONDITION', 'FIRST_CRASH_TYPE']:
+
+    for col in ['WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND',
+                'ROAD_DEFECT', 'ALIGNMENT', 'TRAFFICWAY_TYPE',
+                'TRAFFIC_CONTROL_DEVICE', 'DEVICE_CONDITION', 'FIRST_CRASH_TYPE']:
         df1 = df1[df1[col].str.upper().str.strip() != 'UNKNOWN']
         df1 = df1[df1[col].str.strip() != '']
+
     df1 = df1[df1['INTERSECTION_RELATED_I'].str.upper().str.strip().isin(['Y', 'N'])]
     df1 = df1[(df1['POSTED_SPEED_LIMIT'] > 0) & (df1['POSTED_SPEED_LIMIT'] <= 100)]
     df1 = df1[(df1['LANE_CNT'] > 0) & (df1['LANE_CNT'] <= 20)]
@@ -140,16 +84,14 @@ def _split_and_clean(df):
     df1 = df1[df1['CRASH_MONTH'].between(1, 12)]
     df1.reset_index(drop=True, inplace=True)
 
-    df2 = df[[
-        'FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
-        'ROADWAY_SURFACE_COND', 'POSTED_SPEED_LIMIT', 'TRAFFICWAY_TYPE',
-        'INTERSECTION_RELATED_I', 'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'DAMAGE',
-        'NUM_UNITS', 'HIT_AND_RUN_I'
-    ]].copy().dropna()
-    for col in ['FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
-                'ROADWAY_SURFACE_COND', 'TRAFFICWAY_TYPE']:
+    # ── df2: severity / damage ──────────────────────────────────────────
+    df2 = df[_DF2_COLS].copy().dropna()
+
+    for col in ['FIRST_CRASH_TYPE', 'CRASH_TYPE', 'WEATHER_CONDITION',
+                'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND', 'TRAFFICWAY_TYPE']:
         df2 = df2[df2[col].str.upper().str.strip() != 'UNKNOWN']
         df2 = df2[df2[col].str.strip() != '']
+
     df2 = df2[df2['INTERSECTION_RELATED_I'].str.upper().str.strip().isin(['Y', 'N'])]
     df2 = df2[df2['HIT_AND_RUN_I'].str.upper().str.strip().isin(['Y', 'N'])]
     df2 = df2[df2['DAMAGE'].str.upper().str.strip().isin(['$500 OR LESS', '$501 - $1,500', 'OVER $1,500'])]
@@ -158,7 +100,17 @@ def _split_and_clean(df):
     df2 = df2[df2['CRASH_HOUR'].between(0, 23)]
     df2 = df2[df2['CRASH_DAY_OF_WEEK'].between(0, 6)]
     df2.reset_index(drop=True, inplace=True)
+
     return df1, df2
+
+
+@st.cache_data(show_spinner="Loading crash data...")
+def load_crash_data():
+    path = _resolve_crash_csv()
+    if path is None:
+        raise FileNotFoundError("No crash CSV found.")
+    df = pd.read_csv(path, low_memory=False)
+    return _clean_crash_df(df)
 
 
 def render(chicago_geo=None):
@@ -289,6 +241,21 @@ def render(chicago_geo=None):
                 )
                 fig_density.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
                 st.plotly_chart(fig_density, width="stretch")
+
+                fig_kde = px.density_map(
+                    coords,
+                    lat="LATITUDE",
+                    lon="LONGITUDE",
+                    radius=15,
+                    zoom=9.5,
+                    center={"lat": 41.8358, "lon": -87.6877},
+                    map_style=mapbox_style,
+                    title="Crash Kernel Density Estimation",
+                    color_continuous_scale="YlOrRd",
+                    opacity=0.8,
+                )
+                fig_kde.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
+                st.plotly_chart(fig_kde, width="stretch")
 
                 top3 = crash_counts.nlargest(3, "Crash Count")
                 top_names = ", ".join(

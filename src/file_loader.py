@@ -9,91 +9,6 @@ import geopandas as gpd
 import ml_predictor
 import map_utils
 
-MIN_MATCH_COUNT = 4  # require at least 4 domain columns + lat/lon
-
-# ── Domain column signatures ─────────────────────────────────────────────────
-# Each tab registers the columns it knows about. Uploaded files must match
-# at least MIN_MATCH_COUNT of these AND contain latitude/longitude.
-
-DOMAIN_COLUMNS = {
-    "transportation": {
-        # Crash data
-        "CRASH_DATE", "CRASH_HOUR", "CRASH_DAY_OF_WEEK", "CRASH_MONTH",
-        "WEATHER_CONDITION", "LIGHTING_CONDITION", "ROADWAY_SURFACE_COND",
-        "ROAD_DEFECT", "ALIGNMENT", "TRAFFICWAY_TYPE", "LANE_CNT",
-        "POSTED_SPEED_LIMIT", "TRAFFIC_CONTROL_DEVICE", "DEVICE_CONDITION",
-        "INTERSECTION_RELATED_I", "FIRST_CRASH_TYPE", "CRASH_TYPE",
-        "DAMAGE", "NUM_UNITS", "HIT_AND_RUN_I", "CRASH_RECORD_ID", "CRASH_DATE_EST_I",
-        # Transit
-        "ROUTE", "ROUTE_ID", "STOP_ID", "STOP_NAME", "DIRECTION",
-        "RIDERSHIP", "BOARDINGS", "ALIGHTINGS", "HEADWAY", "DELAY",
-        "ON_TIME", "TRIP_ID", "SERVICE_DATE", "DAY_TYPE",
-        "BUS_ROUTE", "RAIL_LINE", "STATION", "PLATFORM",
-        "DEPARTURE_TIME", "ARRIVAL_TIME", "TRANSIT_TYPE",
-        # Traffic
-        "SPEED", "VOLUME", "VEHICLE_COUNT", "TRAFFIC_COUNT",
-        "VEHICLE_TYPE", "MODE", "DISTANCE",
-        # Parking violations
-        "VIOLATION_TYPE", "LICENSE_PLATE", "FINE_AMOUNT", "ISSUE_DATE",
-        "METER_TYPE", "PARKING_ZONE", "TICKET_NUMBER",
-        # Pedestrian & bike
-        "BIKE_ROUTE", "PEDESTRIAN", "SIDEWALK_CONDITION",
-        # Shared
-        "LATITUDE", "LONGITUDE", "COMMUNITY_AREA", "WARD", "STREET_NAME",
-        "STREET_NUMBER", "DIRECTION_OF_TRAVEL", "DATE",
-    },
-    "public_safety": {
-        # Crime (Chicago Data Portal standard columns)
-        "Community Area", "Year", "Month", "IUCR", "Primary Type",
-        "Description", "Location Description", "Arrest", "Domestic",
-        "Beat", "District", "Ward", "FBI Code", "Case Number",
-        "Date", "Block", "Updated On", "X Coordinate", "Y Coordinate",
-        "Latitude", "Longitude",
-        # General safety / incidents
-        "OFFENSE_TYPE", "INCIDENT_DATE", "REPORTING_AREA",
-        "VICTIM_AGE", "VICTIM_SEX", "VICTIM_RACE",
-        "WEAPON_TYPE", "DISPOSITION", "PRECINCT",
-        "CALL_TYPE", "RESPONSE_TIME", "PRIORITY",
-        "FIRE_INCIDENT", "EMS_INCIDENT", "UNIT",
-        "OFFENSE_CODE", "REPORTED_DATE", "CLEARED",
-    },
-    "infrastructure": {
-        "Community Area", "Year", "Month",
-        # 311 service requests
-        "SR_NUMBER", "SR_TYPE", "SR_SHORT_CODE", "OWNER_DEPARTMENT",
-        "STATUS", "ORIGIN", "CREATED_DATE", "LAST_MODIFIED_DATE",
-        "CLOSED_DATE", "STREET_ADDRESS", "CITY", "STATE", "ZIP_CODE",
-        "WARD", "POLICE_DISTRICT", "LATITUDE", "LONGITUDE",
-        # Building permits
-        "PERMIT_NUMBER", "PERMIT_TYPE", "APPLICATION_START_DATE",
-        "ISSUE_DATE", "WORK_TYPE", "TOTAL_FEE", "CONTRACTOR",
-        "BUILDING_TYPE", "PROPERTY_USE",
-        # Assets / inspections
-        "INSPECTION_STATUS", "REPORTED_DATE", "COMPLETION_DATE",
-        "REPAIR_TYPE", "ASSET_ID", "ASSET_TYPE", "CONDITION",
-        "PRIORITY", "DEPARTMENT",
-    },
-    "socioeconomics": {
-        "community_area", "community_name",
-        "percent_poverty", "PERCENT AGED 16+ UNEMPLOYED",
-        "PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA",
-        "PERCENT AGED UNDER 18 OR OVER 64", "PER CAPITA INCOME",
-        "HARDSHIP INDEX", "Median Income", "Poverty Rate", "BELOW_POVERTY_LINE",
-        # Demographics
-        "Population", "White", "Black", "Hispanic", "Asian",
-        "MEDIAN_AGE", "FOREIGN_BORN", "ENGLISH_ONLY", "SPEAKS_SPANISH",
-        # Housing
-        "TOTAL_HOUSEHOLDS", "OWNER_OCCUPIED", "RENTER_OCCUPIED",
-        "VACANT_UNITS", "MEDIAN_RENT", "MEDIAN_HOME_VALUE",
-        # Education / employment
-        "UNEMPLOYMENT_RATE", "EDUCATION_LEVEL",
-        "HIGH_SCHOOL_GRAD", "BACHELORS_DEGREE",
-        # Health / benefits
-        "HEALTH_INSURANCE", "SNAP_BENEFITS", "GINI_INDEX",
-        # Coordinates (optional but allowed)
-        "LATITUDE", "LONGITUDE",
-    },
-}
 
 # ── Lat/lon detection ─────────────────────────────────────────────────────────
 
@@ -138,6 +53,25 @@ def _find_latlon(df):
     return df, None, None
 
 
+def _extract_latlon_from_gdf(gdf):
+    """
+    Reproject a GeoDataFrame to WGS 84 and extract centroid lat/lon columns.
+    Returns (DataFrame with lat/lon, original GeoDataFrame reprojected to 4326).
+    """
+    if gdf.crs is None:
+        gdf = gdf.set_crs(epsg=4326)
+    elif not gdf.crs.equals("EPSG:4326"):
+        gdf = gdf.to_crs(epsg=4326)
+    centroids = gdf.geometry.centroid
+    df = pd.DataFrame(gdf.drop(columns="geometry"))
+    upper_cols = {c.upper().strip() for c in df.columns}
+    if not upper_cols & _LAT_ALIASES:
+        df["LATITUDE"] = centroids.y
+    if not upper_cols & _LON_ALIASES:
+        df["LONGITUDE"] = centroids.x
+    return df, gdf
+
+
 # ── File readers ──────────────────────────────────────────────────────────────
 
 def _read_uploaded_file(uploaded_file):
@@ -145,17 +79,19 @@ def _read_uploaded_file(uploaded_file):
     try:
         if name.endswith(".csv"):
             df = pd.read_csv(uploaded_file, low_memory=False)
+            return df, None, None
         elif name.endswith(".parquet"):
             df = pd.read_parquet(uploaded_file)
+            return df, None, None
         elif name.endswith(".geojson"):
             raw = uploaded_file.read()
             gdf = gpd.read_file(io.BytesIO(raw))
-            df = pd.DataFrame(gdf.drop(columns="geometry", errors="ignore"))
+            df, gdf = _extract_latlon_from_gdf(gdf)
+            return df, gdf, None
         else:
-            return None, f"Unsupported file type: `{uploaded_file.name}`"
-        return df, None
+            return None, None, f"Unsupported file type: `{uploaded_file.name}`"
     except Exception as e:
-        return None, f"Could not read `{uploaded_file.name}`: {e}"
+        return None, None, f"Could not read `{uploaded_file.name}`: {e}"
 
 
 def _read_shapefile(uploaded_files):
@@ -163,7 +99,7 @@ def _read_shapefile(uploaded_files):
     names_by_ext = {os.path.splitext(f.name)[1].lower(): f for f in uploaded_files}
     missing = required_exts - set(names_by_ext.keys())
     if missing:
-        return None, (
+        return None, None, (
             f"Shapefile upload is missing required components: "
             f"{', '.join(sorted(missing))}. "
             f"Please upload .shp, .shx, and .dbf together (plus .prj, .cpg if available)."
@@ -176,28 +112,25 @@ def _read_shapefile(uploaded_files):
                     out.write(f.read())
             shp_path = os.path.join(tmpdir, "upload.shp")
             gdf = gpd.read_file(shp_path)
-            df = pd.DataFrame(gdf.drop(columns="geometry", errors="ignore"))
-        return df, None
+            df, gdf = _extract_latlon_from_gdf(gdf)
+        return df, gdf, None
     except Exception as e:
-        return None, f"Could not read shapefile: {e}"
+        return None, None, f"Could not read shapefile: {e}"
 
 
 # ── Validation ────────────────────────────────────────────────────────────────
 
-def _validate(df, domain):
+def _validate(df):
     """
-    Returns (df, is_valid, matched_cols, domain_cols, lat_col, lon_col, missing_latlon).
-    Requirements: lat+lon present AND >= MIN_MATCH_COUNT domain columns matched.
-    df may be augmented with derived centroid columns.
+    Returns (df, is_valid, lat_col, lon_col, has_latlon).
+    Requirements: at least one numeric column.
+    Lat/lon is detected but not required (spatial files provide it via geometry).
     """
-    domain_cols = DOMAIN_COLUMNS.get(domain, set())
-    uploaded_upper = {c.upper().strip() for c in df.columns}
-    domain_upper   = {c.upper().strip() for c in domain_cols}
-    matched = uploaded_upper & domain_upper
     df, lat_col, lon_col = _find_latlon(df)
     has_latlon = lat_col is not None and lon_col is not None
-    is_valid = has_latlon and len(matched) >= MIN_MATCH_COUNT
-    return df, is_valid, matched, domain_cols, lat_col, lon_col, not has_latlon
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    is_valid = len(numeric_cols) > 0
+    return df, is_valid, lat_col, lon_col, has_latlon
 
 
 # ── Community-area choropleth helpers ─────────────────────────────────────────
@@ -252,8 +185,52 @@ def _find_name_col(df):
 
 # ── Choropleth / scatter map ──────────────────────────────────────────────────
 
-def _render_map(df, lat_col, lon_col, attr, domain, map_style="open-street-map"):
-    """Render a choropleth (if CA column found) or scatter map."""
+def _render_map(df, lat_col, lon_col, attr, domain, map_style="open-street-map", gdf=None):
+    """Render a choropleth (preferred) or scatter map as fallback."""
+
+    # 1. Choropleth from polygon geometry (GeoJSON / Shapefile uploads)
+    has_polygons = (
+        gdf is not None
+        and hasattr(gdf, "geom_type")
+        and gdf.geom_type.isin(["Polygon", "MultiPolygon"]).all()
+    )
+    if has_polygons:
+        try:
+            name_col = _find_name_col(df)
+            gdf_plot = gdf.copy()
+            gdf_plot[attr] = df[attr].values
+            gdf_plot["_id"] = range(len(gdf_plot))
+            gdf_plot["_id_str"] = gdf_plot["_id"].astype(str)
+            if name_col:
+                gdf_plot["_name"] = df[name_col].values
+            else:
+                gdf_plot["_name"] = [f"Area {i+1}" for i in range(len(gdf_plot))]
+
+            gdf_plot = gdf_plot.dropna(subset=[attr])
+            geojson_dict = gdf_plot.__geo_interface__
+
+            # Auto-center on the data
+            bounds = gdf_plot.total_bounds  # [minx, miny, maxx, maxy]
+            center_lat = (bounds[1] + bounds[3]) / 2
+            center_lon = (bounds[0] + bounds[2]) / 2
+
+            fig = px.choropleth_map(
+                gdf_plot, geojson=geojson_dict,
+                locations="_id_str", featureidkey="properties._id",
+                color=attr, color_continuous_scale="Viridis",
+                map_style=map_style, zoom=9,
+                center={"lat": center_lat, "lon": center_lon},
+                opacity=0.7, hover_name="_name",
+                hover_data={attr: True, "_id_str": False, "_id": False},
+                labels={attr: attr}, title=f"{attr} - uploaded dataset",
+            )
+            fig.update_layout(margin={"r": 0, "t": 40, "l": 0, "b": 0}, height=550)
+            st.plotly_chart(fig, width="stretch")
+            return
+        except Exception as exc:
+            st.warning(f"Choropleth from geometry failed ({exc}). Trying fallback.")
+
+    # 2. Choropleth via Chicago community area column
     ca_col = _find_ca_number_col(df)
     if ca_col:
         try:
@@ -278,6 +255,7 @@ def _render_map(df, lat_col, lon_col, attr, domain, map_style="open-street-map")
         except Exception as exc:
             st.warning(f"Choropleth failed ({exc}). Falling back to scatter map.")
 
+    # 3. Scatter map from lat/lon (last resort)
     if not lat_col or not lon_col:
         st.info("No lat/lon columns found. Cannot render a map.")
         return
@@ -299,7 +277,7 @@ def _render_map(df, lat_col, lon_col, attr, domain, map_style="open-street-map")
 
 # ── Full upload analysis pipeline ─────────────────────────────────────────────
 
-def _render_upload_analysis(df, lat_col, lon_col, domain):
+def _render_upload_analysis(df, lat_col, lon_col, domain, gdf=None):
     """
     Unified analysis suite rendered for any uploaded dataset regardless of tab:
       1. Map (choropleth or scatter)
@@ -307,6 +285,7 @@ def _render_upload_analysis(df, lat_col, lon_col, domain):
       3. Dynamic summary insight
       4. Top / bottom 5 rows by selected attribute
       5. ML predictor
+      6. Spatial autocorrelation (if polygon geometry available)
     """
     st.markdown("---")
     st.subheader("Uploaded Dataset Analysis")
@@ -330,7 +309,7 @@ def _render_upload_analysis(df, lat_col, lon_col, domain):
     upload_mapbox_style = map_utils.mapbox_style_picker(key_prefix=f"upload_{domain}")
 
     # ── 1. Map ────────────────────────────────────────────────────────────────
-    _render_map(df, lat_col, lon_col, attr, domain, map_style=upload_mapbox_style)
+    _render_map(df, lat_col, lon_col, attr, domain, map_style=upload_mapbox_style, gdf=gdf)
 
     st.divider()
 
@@ -412,6 +391,46 @@ def _render_upload_analysis(df, lat_col, lon_col, domain):
         default_features=numeric_cols[:min(8, len(numeric_cols))],
     )
 
+    # ── 6. Spatial Autocorrelation ──────────────────────────────────────────
+    st.divider()
+    has_polygons = (
+        gdf is not None
+        and hasattr(gdf, "geom_type")
+        and gdf.geom_type.isin(["Polygon", "MultiPolygon"]).all()
+    )
+    if has_polygons:
+        name_col = _find_name_col(df)
+        gdf_for_moran = gdf.copy()
+        gdf_for_moran[attr] = df[attr].values
+        if name_col:
+            gdf_for_moran["_name"] = df[name_col].values
+        else:
+            gdf_for_moran["_name"] = [f"Area {i+1}" for i in range(len(gdf))]
+        gdf_for_moran["_id"] = range(len(gdf_for_moran))
+        gdf_for_moran["_id_str"] = gdf_for_moran["_id"].astype(str)
+
+        valid_moran = gdf_for_moran.dropna(subset=[attr])
+        if len(valid_moran) >= 10:
+            geojson_dict = valid_moran.__geo_interface__
+            map_utils.render_moran_analysis(
+                gdf=valid_moran,
+                value_col=attr,
+                name_col="_name",
+                id_col="_id_str",
+                geojson=geojson_dict,
+                featureidkey="properties._id",
+                key_prefix=f"upload_{domain}_moran",
+                map_style=upload_mapbox_style,
+            )
+        else:
+            st.info("Need at least 10 areas with valid data to run spatial autocorrelation.")
+    else:
+        st.info(
+            "**Spatial autocorrelation not available for this dataset.** "
+            "Upload a GeoJSON or Shapefile with polygon geometries to enable "
+            "Global Moran's I, Local Moran's I (LISA), and Getis-Ord Gi* analysis."
+        )
+
 
 # ── Public uploader ───────────────────────────────────────────────────────────
 
@@ -436,8 +455,8 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
     st.caption(
         "Accepted formats: CSV, Parquet, GeoJSON, Shapefile (.shp + .shx + .dbf + companions). "
         "Uploaded data is session-only and cleared on page refresh. "
-        "Dataset must include latitude & longitude columns and at least "
-        f"{MIN_MATCH_COUNT} recognized domain attributes."
+        "CSVs require latitude & longitude columns for mapping. "
+        "GeoJSON and Shapefiles carry their own geometry and CRS (any projection is auto-converted)."
     )
 
     uploaded = st.file_uploader(
@@ -449,6 +468,7 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
     )
 
     df = None
+    gdf = None
     source = None
 
     if uploaded:
@@ -456,11 +476,11 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
         is_shapefile_upload = ".shp" in exts
 
         if is_shapefile_upload:
-            df, err = _read_shapefile(uploaded)
+            df, gdf, err = _read_shapefile(uploaded)
         elif len(uploaded) == 1:
-            df, err = _read_uploaded_file(uploaded[0])
+            df, gdf, err = _read_uploaded_file(uploaded[0])
         else:
-            df, err = _read_uploaded_file(uploaded[0])
+            df, gdf, err = _read_uploaded_file(uploaded[0])
             st.warning(
                 f"Multiple files detected. Only `{uploaded[0].name}` was loaded. "
                 "For shapefiles, ensure you include the .shp file along with companions."
@@ -470,37 +490,45 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
             st.error(err)
             return None, None
 
-        df, is_valid, matched, domain_cols, lat_col, lon_col, missing_latlon = _validate(df, domain)
+        df, is_valid, lat_col, lon_col, has_latlon = _validate(df)
 
         if not is_valid:
-            if missing_latlon:
-                st.error(
-                    "This dataset is missing **latitude and longitude** columns. "
-                    "Both are required for upload.\n\n"
-                    "Expected column names include: `latitude`, `longitude`, `lat`, `lon`, `lng`."
-                )
-            else:
-                st.error(
-                    f"This file does not appear to match the **{domain.replace('_', ' ').title()}** domain. "
-                    f"Only {len(matched)} recognized column(s) were found — at least {MIN_MATCH_COUNT} are required.\n\n"
-                    f"**Matched columns:** {', '.join(sorted(matched)) if matched else 'none'}\n\n"
-                    f"**Expected columns include:** {', '.join(sorted(list(domain_cols))[:10])}{'...' if len(domain_cols) > 10 else ''}"
-                )
+            st.error(
+                "This dataset has **no numeric columns** to analyze. "
+                "Upload a file with at least one numeric attribute."
+            )
             return None, None
 
-        derived = lat_col == "_latitude"
-        latlon_note = (
-            "Lat/lon derived from bounding box (NORTH/SOUTH/EAST/WEST centroids)."
-            if derived else
-            f"Lat/lon: `{lat_col}` / `{lon_col}`."
+        has_polygons = (
+            gdf is not None
+            and hasattr(gdf, "geom_type")
+            and gdf.geom_type.isin(["Polygon", "MultiPolygon"]).all()
         )
+
+        if has_latlon:
+            derived = lat_col == "_latitude"
+            latlon_note = (
+                "Lat/lon derived from bounding box centroids."
+                if derived else
+                (f"Lat/lon derived from geometry."
+                 if gdf is not None else
+                 f"Lat/lon: `{lat_col}` / `{lon_col}`.")
+            )
+        else:
+            latlon_note = "No lat/lon columns — map will use community area choropleth if available."
+
+        spatial_note = (
+            " Spatial autocorrelation (Moran's I, Gi*) enabled."
+            if has_polygons else ""
+        )
+
         st.success(
             f"File loaded — {len(df):,} rows, {len(df.columns)} columns. "
-            f"Matched {len(matched)} domain column(s). {latlon_note}"
+            f"{latlon_note}{spatial_note}"
         )
         source = "upload"
 
-        _render_upload_analysis(df, lat_col, lon_col, domain)
+        _render_upload_analysis(df, lat_col, lon_col, domain, gdf=gdf)
 
         return df, source
 
@@ -514,10 +542,10 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
             pass
 
     # Nothing available
-    domain_cols = DOMAIN_COLUMNS.get(domain, set())
     st.info(
         "No data loaded yet. Upload a file above.\n\n"
-        f"**Requirements:** latitude & longitude columns + at least {MIN_MATCH_COUNT} of these domain columns: "
-        f"{', '.join(sorted(list(domain_cols))[:12])}{'...' if len(domain_cols) > 12 else ''}"
+        "**CSV / Parquet:** need latitude & longitude columns for mapping.\n\n"
+        "**GeoJSON / Shapefile:** geometry and CRS are read automatically (any projection supported). "
+        "Polygon data will also enable spatial autocorrelation analysis."
     )
     return None, None

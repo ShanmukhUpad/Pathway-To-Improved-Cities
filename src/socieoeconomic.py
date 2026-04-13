@@ -28,6 +28,14 @@ def _load_geojson() -> gpd.GeoDataFrame:
     return gpd.read_file(GEOJSON_URL)
 
 
+@st.cache_data(show_spinner="Loading community area boundaries...")
+def _load_geojson_dict():
+    """Fetch community area GeoJSON as a plain dict (for Plotly choropleth)."""
+    resp = requests.get(GEOJSON_URL, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
 @st.cache_data
 def load_and_train():
     gdf = _load_geojson()
@@ -405,12 +413,6 @@ def render():
         # ── Moran's I Spatial Autocorrelation ────────────────────────────
         st.divider()
         try:
-            @st.cache_data
-            def _load_geojson_dict():
-                resp = requests.get(GEOJSON_URL, timeout=30)
-                resp.raise_for_status()
-                return resp.json()
-
             geojson_dict_moran = _load_geojson_dict()
 
             merged["area_num_str"] = merged["area_num_1"].astype(str)

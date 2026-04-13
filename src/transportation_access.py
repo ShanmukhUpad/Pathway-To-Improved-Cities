@@ -155,6 +155,21 @@ def render():
     fig_routes.update_layout(coloraxis_showscale=False, xaxis_title="Ward")
     st.plotly_chart(fig_routes, width="stretch")
 
+    fig_bus_kde = px.density_map(
+        bus,
+        lat="latitude",
+        lon="longitude",
+        radius=15,
+        zoom=9.5,
+        center={"lat": 41.8358, "lon": -87.6877},
+        map_style=mapbox_style,
+        title="Bus Stop Kernel Density",
+        color_continuous_scale="Blues",
+        opacity=0.8,
+    )
+    fig_bus_kde.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
+    st.plotly_chart(fig_bus_kde, width="stretch")
+
     top_bus_ward    = bus_per_ward.loc[bus_per_ward["num_stops"].idxmax()]
     bottom_bus_ward = bus_per_ward.loc[bus_per_ward["num_stops"].idxmin()]
     st.info(
@@ -227,6 +242,21 @@ def render():
            if near_cap_pct > 20 else
            "Most stations have available capacity, though targeted monitoring of near-full stations is still valuable.")
     )
+
+    fig_divvy_kde = px.density_map(
+        divvy,
+        lat="latitude",
+        lon="longitude",
+        radius=20,
+        zoom=9.5,
+        center={"lat": 41.8358, "lon": -87.6877},
+        map_style=mapbox_style,
+        title="Divvy Station Kernel Density",
+        color_continuous_scale="Greens",
+        opacity=0.8,
+    )
+    fig_divvy_kde.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
+    st.plotly_chart(fig_divvy_kde, width="stretch")
 
     st.divider()
 
