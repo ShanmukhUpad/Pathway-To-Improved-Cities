@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,7 +11,6 @@ from sklearn.model_selection import train_test_split, TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, r2_score
 import plotly.express as px
 import geopandas as gpd
-import file_loader
 import ml_predictor
 import map_utils
 
@@ -55,9 +55,6 @@ def _load_community_areas_gdf():
 def render(chicago_geo, area_map):
     st.header("Public Safety Dashboard")
     st.markdown("Analyze and forecast crime trends across Chicago community areas.")
-
-    with st.expander("Upload a supplemental dataset"):
-        file_loader.uploader(domain="public_safety", local_csv=None, label="Upload a public safety dataset")
 
     if not os.path.exists(CRIME_CSV):
         st.info("No local crime data found. Fetching the latest data from the Chicago Data Portal…")
@@ -163,34 +160,56 @@ def render(chicago_geo, area_map):
         model.fit(X, y)
         prediction = max(0, model.predict(X[-1].reshape(1, -1))[0])
 
-        st.subheader(f"Predicted {selected_crime} counts for next month")
-        col_f1, col_f2, col_f3 = st.columns(3)
-        col_f1.metric("Forecast", round(prediction))
-        col_f2.metric("CV RMSE", f"{rmse:.2f}")
-        col_f3.metric("CV R²", f"{r2:.3f}")
-        st.caption(f"Best model: **{best_name}** (selected via {n_splits}-fold time-series CV)")
+        # Compute the actual next-month label (e.g., "May 2026")
+        _today = datetime.now()
+        _nm    = _today.replace(month=_today.month % 12 + 1,
+                                year=_today.year + (_today.month // 12))
+        next_month_label = _nm.strftime("%B %Y")
 
-        # ── Forecast interpretation ───────────────────────────────────────────
+        trend_vs_latest = prediction - latest_val if not area_data[selected_crime].dropna().empty else 0
+        arrow   = "▲" if trend_vs_latest >= 0 else "▼"
+        chg_dir = "increase" if trend_vs_latest >= 0 else "decrease"
+
+        # ── Prominent headline ────────────────────────────────────────────────
+        st.markdown(f"""
+<div style="background:rgba(224,80,80,0.1); border-left:4px solid #e05050;
+            padding:18px 22px; border-radius:8px; margin:14px 0;">
+  <p style="margin:0; font-size:11px; color:#9eaec4; text-transform:uppercase;
+            letter-spacing:0.08em;">Crime Forecast — {next_month_label}</p>
+  <p style="margin:6px 0 2px; font-size:2.4rem; font-weight:800;
+            color:#ffffff; line-height:1.1;">
+    {round(prediction):,}
+    <span style="font-size:1.1rem; font-weight:500; color:#e08080;">
+      &nbsp;{selected_crime}
+    </span>
+  </p>
+  <p style="margin:2px 0 0; font-size:14px; color:#9eaec4;">
+    in <strong style="color:#ffffff;">{selected_area}</strong>
+    &nbsp;·&nbsp; {arrow} {abs(trend_vs_latest):.0f} incidents from last month
+  </p>
+</div>
+""", unsafe_allow_html=True)
+
+        # ── Supporting metrics ────────────────────────────────────────────────
+        col_f1, col_f2, col_f3 = st.columns(3)
+        col_f1.metric("Forecast", f"{round(prediction):,}")
+        col_f2.metric("CV RMSE", f"±{rmse:.1f}")
+        col_f3.metric("CV R²", f"{r2:.3f}")
+        st.caption(f"Model: **{best_name}** · {n_splits}-fold time-series CV")
+
+        # ── Interpretation ────────────────────────────────────────────────────
         r2_label = (
             "strong" if r2 >= 0.6 else
             "moderate" if r2 >= 0.3 else
             "weak" if r2 >= 0.0 else
             "poor (worse than baseline)"
         )
-        trend_vs_latest = prediction - latest_val if not area_data[selected_crime].dropna().empty else 0
-        chg_dir = "increase" if trend_vs_latest > 0 else "decrease"
         st.info(
-            f"**Forecast interpretation:** The model predicts **{round(prediction)} {selected_crime} incidents** "
-            f"next month in {selected_area}, a **{abs(trend_vs_latest):.0f}-incident {chg_dir}** from last month. "
-            f"Cross-validated RMSE of {rmse:.2f} means predictions are typically off by ±{rmse:.1f} incidents. "
-            f"CV R² of {r2:.3f} indicates a **{r2_label}** fit"
-            + (" — the model captures temporal patterns well and forecasts are reliable."
-               if r2 >= 0.6
-               else (" — the model explains some variance; treat the forecast as a useful estimate."
-                     if r2 >= 0.3
-                     else (" — the model has limited explanatory power; treat the forecast as directional only."
-                           if r2 >= 0.0
-                           else " — the model performs worse than a simple average. Consider the forecast unreliable.")))
+            f"**What this means:** In **{next_month_label}**, the model expects "
+            f"**{round(prediction):,} {selected_crime} incidents** in {selected_area} — "
+            f"a **{abs(trend_vs_latest):.0f}-incident {chg_dir}** from last month. "
+            f"Typical prediction error: ±{rmse:.1f} incidents (CV RMSE). "
+            f"Model fit (CV R²): **{r2:.3f}** — {r2_label}."
         )
     else:
         st.info("Not enough data to generate a prediction.")

@@ -112,10 +112,10 @@ def _compute_moran(gdf_json: str, value_col: str):
     w = _build_weights(gdf)
 
     # Global
-    moran_global = Moran(y, w, permutations=99)
+    moran_global = Moran(y, w, permutations=49)
 
     # Local (LISA)
-    moran_local = Moran_Local(y, w, permutations=99)
+    moran_local = Moran_Local(y, w, permutations=49)
 
     # Classify quadrants
     sig = moran_local.p_sim < 0.05
@@ -134,7 +134,7 @@ def _compute_moran(gdf_json: str, value_col: str):
     # Getis-Ord Gi* hot spot analysis
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        g_local = G_Local(y, w, transform="R", star=True, permutations=99)
+        g_local = G_Local(y, w, transform="R", star=True, permutations=49)
 
     gi_labels = []
     for i in range(len(y)):
@@ -193,6 +193,12 @@ def render_moran_analysis(
     if len(valid) < 10:
         st.warning("Not enough areas with valid data to compute Moran's I.")
         return
+
+    # Auto-derive map center and zoom from the actual data bounds
+    bounds = valid.total_bounds  # [minx, miny, maxx, maxy]
+    map_center = {"lat": (bounds[1] + bounds[3]) / 2, "lon": (bounds[0] + bounds[2]) / 2}
+    span = max(bounds[3] - bounds[1], bounds[2] - bounds[0])
+    map_zoom = max(3, min(13, round(8.5 - np.log2(span + 0.001))))
 
     # Serialize GeoDataFrame to GeoJSON string for caching
     gdf_json = valid.to_json()
@@ -293,7 +299,7 @@ def render_moran_analysis(
                 "HH (Hot Spot)", "HL", "LH", "LL (Cold Spot)", "Not Significant"
             ]},
             map_style=map_style,
-            zoom=9, center={"lat": 41.8358, "lon": -87.6877},
+            zoom=map_zoom, center=map_center,
             opacity=0.7,
             hover_name=name_col,
             hover_data={value_col: True, "LISA Cluster": True},
@@ -419,7 +425,7 @@ def render_moran_analysis(
             color_continuous_scale="YlOrRd_r",
             range_color=[0, 0.1],
             map_style=map_style,
-            zoom=9, center={"lat": 41.8358, "lon": -87.6877},
+            zoom=map_zoom, center=map_center,
             opacity=0.7,
             hover_name=name_col,
             hover_data={"p-value": ":.4f"},
@@ -438,7 +444,7 @@ def render_moran_analysis(
             color_continuous_scale="RdBu_r",
             range_color=[-max_abs, max_abs],
             map_style=map_style,
-            zoom=9, center={"lat": 41.8358, "lon": -87.6877},
+            zoom=map_zoom, center=map_center,
             opacity=0.7,
             hover_name=name_col,
             hover_data={"Local Moran's I": ":.4f", "p-value": ":.4f"},
@@ -487,7 +493,7 @@ def render_moran_analysis(
             "Cold Spot (99% confidence)",
         ]},
         map_style=map_style,
-        zoom=9, center={"lat": 41.8358, "lon": -87.6877},
+        zoom=map_zoom, center=map_center,
         opacity=0.7,
         hover_name=name_col,
         hover_data={value_col: True, "Gi* z-score": ":.4f", "Gi* p-value": ":.4f"},

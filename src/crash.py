@@ -5,7 +5,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import geopandas as gpd
 import os
-import file_loader
 import ml_predictor
 import map_utils
 
@@ -121,13 +120,6 @@ def render(chicago_geo=None):
     )
 
     mapbox_style = map_utils.mapbox_style_picker(key_prefix="crash")
-
-    with st.expander("Upload a supplemental dataset"):
-        file_loader.uploader(
-            domain="transportation",
-            local_csv=None,
-            label="Upload a crash dataset"
-        )
 
     try:
         df1, df2 = load_crash_data()

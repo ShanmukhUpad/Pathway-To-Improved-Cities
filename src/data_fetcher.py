@@ -15,6 +15,7 @@ anonymous rate limits.
 import os
 import sys
 import time
+import threading
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
@@ -39,6 +40,11 @@ CACHE_DAYS = 1
 
 # Optional Socrata app token — anonymous access works but is rate-limited
 APP_TOKEN = os.environ.get("CHICAGO_DATA_PORTAL_TOKEN", "")
+
+# ── Background refresh state ──────────────────────────────────────────────────
+
+_refresh_done  = threading.Event()   # set() when background refresh completes
+_refresh_lock  = threading.Lock()    # prevents overlapping concurrent refreshes
 
 
 # ──────────────────────────────────────────────
@@ -229,6 +235,51 @@ def refresh_all(force: bool = False):
     fetch_crimes(force=force)
     fetch_crashes(force=force)
     print("[done] All datasets refreshed.")
+
+
+# ── Scheduled / startup refresh ───────────────────────────────────────────────
+
+def start_background_refresh():
+    """
+    Spawn a daemon thread to refresh stale datasets on startup.
+    No-op if data is already fresh. Safe to call on every Streamlit rerun —
+    _refresh_lock prevents overlapping runs.
+
+    The thread only performs disk I/O. All st.* calls must happen on the
+    render thread after checking _refresh_done.is_set().
+    """
+    def _worker():
+        if not _refresh_lock.acquire(blocking=False):
+            return   # another refresh is already in progress
+        try:
+            refresh_all(force=False)
+            _refresh_done.set()
+        finally:
+            _refresh_lock.release()
+
+    if is_stale(CRIME_OUT) or is_stale(CRASH_OUT):
+        threading.Thread(target=_worker, daemon=True).start()
+
+
+def start_scheduler():
+    """
+    Start an APScheduler BackgroundScheduler that triggers refresh_all()
+    every day at 06:00. Intended for production deployments.
+    Use st.cache_resource to ensure only one scheduler per server process.
+    """
+    from apscheduler.schedulers.background import BackgroundScheduler
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        refresh_all,
+        trigger="cron",
+        hour=6,
+        minute=0,
+        kwargs={"force": True},
+        id="daily_refresh",
+        replace_existing=True,
+    )
+    scheduler.start()
+    return scheduler
 
 
 if __name__ == "__main__":

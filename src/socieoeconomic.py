@@ -1,5 +1,4 @@
 import geopandas as gpd
-import file_loader
 import pandas as pd
 import json
 import numpy as np
@@ -116,13 +115,6 @@ def load_and_train():
 
 def render():
 
-    with st.expander("Upload a supplemental dataset"):
-        file_loader.uploader(
-            domain="socioeconomics",
-            local_csv=None,
-            label="Upload a socioeconomic dataset",
-        )
-
     mapbox_style = map_utils.mapbox_style_picker(key_prefix="socio")
 
     _csv_missing = not CSV_PATH.exists()
@@ -184,20 +176,49 @@ def render():
 
             geojson_dict = merged.__geo_interface__
 
-            fig_main = px.choropleth_map(
-                merged, geojson=geojson_dict,
-                locations="area_num_1", featureidkey="properties.area_num_1",
-                color=chosen_col, color_continuous_scale="YlOrRd",
-                map_style=mapbox_style,
-                zoom=9, center={"lat": 41.85, "lon": -87.68},
-                opacity=0.7,
-                hover_name="community",
-                hover_data={"HARDSHIP INDEX": True, "RF_Predicted": True, "GB_Predicted": True,
-                           "PER CAPITA INCOME": True, "PERCENT HOUSEHOLDS BELOW POVERTY": True},
-                title=model_choice,
+            show_tracts = st.toggle(
+                "Show census tract boundaries",
+                value=False,
+                help="Disaggregates community area data to ~800 census tracts. "
+                     "Values within each community area are uniform (no tract-level data available).",
+                key=f"socio_tract_toggle_{chosen_col}",
             )
-            fig_main.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=620)
-            st.plotly_chart(fig_main, width="stretch")
+
+            if show_tracts:
+                st.caption(
+                    "Census tract view — values reflect community-area data disaggregated uniformly to tracts."
+                )
+                comm_data_socio = {
+                    str(row["area_num_1"]): row[chosen_col]
+                    for _, row in merged.iterrows()
+                    if pd.notna(row[chosen_col])
+                }
+                tract_geojson = folium_utils.load_tract_geojson()
+                tract_data_socio = folium_utils.disaggregate_to_tracts(comm_data_socio, tract_geojson)
+                folium_utils.render_tract_map(
+                    tract_geojson=tract_geojson,
+                    tract_data=tract_data_socio,
+                    value_label=model_choice,
+                    color_scale="YlOrRd",
+                    map_style=mapbox_style,
+                    key=f"socio_tract_map_{chosen_col}",
+                    height=620,
+                )
+            else:
+                fig_main = px.choropleth_map(
+                    merged, geojson=geojson_dict,
+                    locations="area_num_1", featureidkey="properties.area_num_1",
+                    color=chosen_col, color_continuous_scale="YlOrRd",
+                    map_style=mapbox_style,
+                    zoom=9, center={"lat": 41.85, "lon": -87.68},
+                    opacity=0.7,
+                    hover_name="community",
+                    hover_data={"HARDSHIP INDEX": True, "RF_Predicted": True, "GB_Predicted": True,
+                               "PER CAPITA INCOME": True, "PERCENT HOUSEHOLDS BELOW POVERTY": True},
+                    title=model_choice,
+                )
+                fig_main.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=620)
+                st.plotly_chart(fig_main, width="stretch")
 
             st.markdown("**Predicted Hardship Index - Side by Side**")
             st.caption("Left: Random Forest. Right: Gradient Boosting. Hover any area to compare values.")
