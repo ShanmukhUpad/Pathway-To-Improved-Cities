@@ -14,13 +14,8 @@ import argparse
 import os
 import sys
 import time
-<<<<<<< Updated upstream
-import requests
-import pandas as pd
-=======
 import threading
 from concurrent.futures import ThreadPoolExecutor
->>>>>>> Stashed changes
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -35,14 +30,9 @@ load_dotenv(os.path.join(SRC_DIR, ".env"))
 # Re-fetch if local file older than this many days
 CACHE_DAYS = 1
 
-<<<<<<< Updated upstream
-# Optional Socrata app token — anonymous access works but is rate-limited
-APP_TOKEN = os.environ.get("CHICAGO_DATA_PORTAL_TOKEN", "")
-=======
 # Background refresh state
 _refresh_done = threading.Event()
 _refresh_lock = threading.Lock()
->>>>>>> Stashed changes
 
 
 # ──────────────────────────────────────────────
@@ -198,8 +188,6 @@ _CRASH_FETCHERS = {
 }
 
 
-<<<<<<< Updated upstream
-=======
 def fetch_crimes(city: CityConfig, force: bool = False) -> str:
     fn = _CRIME_FETCHERS.get(city.key)
     if fn is None:
@@ -280,7 +268,6 @@ def start_scheduler():
     return scheduler
 
 
->>>>>>> Stashed changes
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--force", action="store_true")

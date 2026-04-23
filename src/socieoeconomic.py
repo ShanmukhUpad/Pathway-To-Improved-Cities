@@ -123,21 +123,10 @@ def _load_and_train(city_key: str, csv_path: str, id_col: str, geo_json_str: str
 def render(city: CityConfig, geo: dict | None = None):
     mapbox_style = map_utils.mapbox_style_picker(key_prefix=f"socio_{city.key}")
 
-<<<<<<< Updated upstream
-    with st.expander("Upload a supplemental dataset"):
-        file_loader.uploader(
-            domain="socioeconomics",
-            local_csv=None,
-            label="Upload a socioeconomic dataset",
-        )
-
-    mapbox_style = map_utils.mapbox_style_picker(key_prefix="socio")
-=======
     csv_path = city.census_path
     if not os.path.exists(csv_path):
         st.warning(f"No census CSV at `{csv_path}`.")
         return
->>>>>>> Stashed changes
 
     geo_str = json.dumps(geo) if geo and geo.get("features") else None
     try:
@@ -178,46 +167,6 @@ def render(city: CityConfig, geo: dict | None = None):
             }
             chosen = col_map[choice]
             geojson_dict = merged.__geo_interface__
-<<<<<<< Updated upstream
-
-            fig_main = px.choropleth_map(
-                merged, geojson=geojson_dict,
-                locations="area_num_1", featureidkey="properties.area_num_1",
-                color=chosen_col, color_continuous_scale="YlOrRd",
-                map_style=mapbox_style,
-                zoom=9, center={"lat": 41.85, "lon": -87.68},
-                opacity=0.7,
-                hover_name="community",
-                hover_data={"HARDSHIP INDEX": True, "RF_Predicted": True, "GB_Predicted": True,
-                           "PER CAPITA INCOME": True, "PERCENT HOUSEHOLDS BELOW POVERTY": True},
-                title=model_choice,
-            )
-            fig_main.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=620)
-            st.plotly_chart(fig_main, width="stretch")
-
-            st.markdown("**Predicted Hardship Index - Side by Side**")
-            st.caption("Left: Random Forest. Right: Gradient Boosting. Hover any area to compare values.")
-
-            left_col, right_col = st.columns(2)
-            for col, pred_col, label in [
-                (left_col,  "RF_Predicted", "Random Forest Predicted"),
-                (right_col, "GB_Predicted", "Gradient Boosting Predicted"),
-            ]:
-                with col:
-                    fig_pred = px.choropleth_map(
-                        merged, geojson=geojson_dict,
-                        locations="area_num_1", featureidkey="properties.area_num_1",
-                        color=pred_col, color_continuous_scale="YlOrRd",
-                        map_style=mapbox_style,
-                        zoom=9, center={"lat": 41.85, "lon": -87.68},
-                        opacity=0.7,
-                        hover_name="community",
-                        hover_data={"HARDSHIP INDEX": True, pred_col: True},
-                        title=label,
-                    )
-                    fig_pred.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=480)
-                    st.plotly_chart(fig_pred, width="stretch")
-=======
             fig = px.choropleth_map(
                 merged, geojson=geojson_dict,
                 locations=city.census_id_col,
@@ -236,7 +185,6 @@ def render(city: CityConfig, geo: dict | None = None):
     with tab_diag:
         if not data["scatter"]:
             st.info("No model diagnostics — feature columns missing.")
->>>>>>> Stashed changes
         else:
             scatter_json = json.dumps(data["scatter"])
             chart_html = f"""<!DOCTYPE html><html>

@@ -4,8 +4,7 @@ pipeline {
     environment {
         IMAGE_NAME = "pathway-to-improved-cities"
         IMAGE_TAG  = "${env.BUILD_NUMBER}"
-        PYTHON_IMAGE = "python:3.11-slim"
-        REGISTRY   = "" // e.g. "ghcr.io/aryan"  leave blank to skip push
+        REGISTRY   = "" // set to e.g. "ghcr.io/aryan" to enable push
     }
 
     options {
@@ -19,77 +18,15 @@ pipeline {
             steps { checkout scm }
         }
 
-        stage('Lint') {
+        stage('Conflict Marker Check') {
             steps {
                 sh '''
-                    docker run --rm \
-                      -u "$(id -u):$(id -g)" \
-                      -e HOME=/tmp \
-                      -v "$PWD":/workspace \
-                      -w /workspace \
-                      ${PYTHON_IMAGE} \
-                      sh -lc '
-                        rm -rf .venv-ci
-                        python -m venv .venv-ci
-                        . .venv-ci/bin/activate
-                        pip install --quiet --upgrade pip
-                        pip install --quiet ruff
-                        ruff check src || true
-                      '
-                '''
-            }
-        }
-
-        stage('Compile Check') {
-            steps {
-                sh '''
-                    docker run --rm \
-                      -u "$(id -u):$(id -g)" \
-                      -e HOME=/tmp \
-                      -v "$PWD":/workspace \
-                      -w /workspace \
-                      ${PYTHON_IMAGE} \
-                      sh -lc '
-                        rm -rf .venv-ci
-                        python -m venv .venv-ci
-                        . .venv-ci/bin/activate
-                        pip install --quiet --upgrade pip
-                        pip install --quiet -r requirements.txt
-                        python -m compileall -q src
-                      '
-                '''
-            }
-        }
-
-        stage('Smoke Test') {
-            steps {
-                sh '''
-                    docker run --rm \
-                      -u "$(id -u):$(id -g)" \
-                      -e HOME=/tmp \
-                      -v "$PWD":/workspace \
-                      -w /workspace \
-                      ${PYTHON_IMAGE} \
-                      sh -lc '
-                        rm -rf .venv-ci
-                        python -m venv .venv-ci
-                        . .venv-ci/bin/activate
-                        pip install --quiet --upgrade pip
-                        pip install --quiet -r requirements.txt
-                        cd src
-                        python - <<PY
-import warnings; warnings.filterwarnings("ignore")
-from city_config import CITIES, get_city, load_boundary
-for key in CITIES:
-    city = get_city(key)
-    try:
-        geo, am = load_boundary(city)
-        assert len(am) > 0, f"{key}: empty area_map"
-        print(f"[ok] {key}: {len(am)} areas")
-    except Exception as e:
-        print(f"[warn] {key}: {e}")
-PY
-                      '
+                    set -e
+                    if grep -RIn --include="*.py" -E "^(<<<<<<<|=======|>>>>>>>)" src; then
+                        echo "ERROR: unresolved merge conflict markers in src/"
+                        exit 1
+                    fi
+                    echo "[ok] no conflict markers"
                 '''
             }
         }
@@ -100,19 +37,61 @@ PY
             }
         }
 
+        stage('Compile Check') {
+            steps {
+                sh '''
+                    docker run --rm \
+                      -v "$PWD":/workspace -w /workspace \
+                      ${IMAGE_NAME}:${IMAGE_TAG} \
+                      python -m compileall -q src
+                '''
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                sh '''
+                    docker run --rm \
+                      -w /app/src \
+                      ${IMAGE_NAME}:${IMAGE_TAG} \
+                      python -c "
+import warnings; warnings.filterwarnings('ignore')
+from city_config import CITIES, get_city, load_boundary
+failed = 0
+for key in CITIES:
+    city = get_city(key)
+    try:
+        geo, am = load_boundary(city)
+        assert len(am) > 0, 'empty area_map'
+        print(f'[ok] {key}: {len(am)} areas')
+    except Exception as e:
+        print(f'[FAIL] {key}: {e}')
+        failed += 1
+exit(1 if failed else 0)
+"
+                '''
+            }
+        }
+
         stage('Container Health') {
             steps {
                 sh '''
                     docker rm -f pic-ci 2>/dev/null || true
                     docker run -d --name pic-ci -p 18501:8501 ${IMAGE_NAME}:${IMAGE_TAG}
+                    ok=0
                     for i in $(seq 1 30); do
-                        if curl -fsS http://localhost:18501/_stcore/health >/dev/null; then
-                            echo "healthy"; exit 0
+                        if docker exec pic-ci curl -fsS http://localhost:8501/_stcore/health >/dev/null 2>&1; then
+                            echo "[ok] container healthy"
+                            ok=1
+                            break
                         fi
                         sleep 2
                     done
-                    docker logs pic-ci
-                    exit 1
+                    if [ "$ok" != "1" ]; then
+                        echo "[FAIL] container never became healthy"
+                        docker logs pic-ci
+                        exit 1
+                    fi
                 '''
             }
             post {
@@ -129,7 +108,9 @@ PY
                     passwordVariable: 'REG_PASS',
                 )]) {
                     sh '''
-                        echo "$REG_PASS" | docker login ${REGISTRY%%/*} -u "$REG_USER" --password-stdin
+                        set -e
+                        REG_HOST=$(echo "$REGISTRY" | cut -d/ -f1)
+                        echo "$REG_PASS" | docker login "$REG_HOST" -u "$REG_USER" --password-stdin
                         docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
                         docker tag ${IMAGE_NAME}:latest     ${REGISTRY}/${IMAGE_NAME}:latest
                         docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}

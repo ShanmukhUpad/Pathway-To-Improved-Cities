@@ -5,11 +5,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import geopandas as gpd
-<<<<<<< Updated upstream
-import os
-import file_loader
-=======
->>>>>>> Stashed changes
 import ml_predictor
 import map_utils
 from city_config import CityConfig
@@ -103,33 +98,10 @@ def _load_crash_data(city_key: str, path: str):
     return _clean_crash_df(df)
 
 
-<<<<<<< Updated upstream
-def render(chicago_geo=None):
-    st.header("Transportation Dashboard")
-    st.markdown(
-        "Traffic crash patterns across Chicago — road conditions, timing, "
-        "crash types, and damage severity."
-    )
-
-    mapbox_style = map_utils.mapbox_style_picker(key_prefix="crash")
-
-    with st.expander("Upload a supplemental dataset"):
-        file_loader.uploader(
-            domain="transportation",
-            local_csv=None,
-            label="Upload a crash dataset"
-        )
-
-    try:
-        df1, df2 = load_crash_data()
-    except FileNotFoundError:
-        st.info("No local crash data found. Fetching the latest data from the Chicago Data Portal…")
-=======
 @st.cache_data(show_spinner="Loading geometries for crash join...")
 def _load_geo_gdf_crash(city_key: str, geo_json_str: str, id_field: str):
     gdf = gpd.read_file(io.StringIO(geo_json_str), driver="GeoJSON")
     if id_field in gdf.columns:
->>>>>>> Stashed changes
         try:
             gdf[id_field] = gdf[id_field].astype(int)
         except (TypeError, ValueError):

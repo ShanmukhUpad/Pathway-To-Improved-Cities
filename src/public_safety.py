@@ -1,10 +1,7 @@
 import io
 import os
-<<<<<<< Updated upstream
-=======
 import json
 from datetime import datetime
->>>>>>> Stashed changes
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -69,24 +66,9 @@ def render(city: CityConfig, geo: dict, area_map: dict):
     st.header(f"Public Safety Dashboard — {city.name}")
     st.markdown(f"Crime trends and forecasts across {city.name}.")
 
-<<<<<<< Updated upstream
-    with st.expander("Upload a supplemental dataset"):
-        file_loader.uploader(domain="public_safety", local_csv=None, label="Upload a public safety dataset")
-
-    if not os.path.exists(CRIME_CSV):
-        st.info("No local crime data found. Fetching the latest data from the Chicago Data Portal…")
-        try:
-            import data_fetcher
-            data_fetcher.fetch_crimes(force=True)
-            st.cache_data.clear()
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Auto-fetch failed: {exc}")
-=======
     crime_path = city.crime_path
     if not os.path.exists(crime_path):
         st.warning(f"No crime CSV at `{crime_path}`. Run data refresh.")
->>>>>>> Stashed changes
         return
 
     area_col = city.crime_area_col
@@ -174,16 +156,6 @@ def render(city: CityConfig, geo: dict, area_map: dict):
         model.fit(X, y)
         prediction = max(0, model.predict(X[-1].reshape(1, -1))[0])
 
-<<<<<<< Updated upstream
-        st.subheader(f"Predicted {selected_crime} counts for next month")
-        col_f1, col_f2, col_f3 = st.columns(3)
-        col_f1.metric("Forecast", round(prediction))
-        col_f2.metric("CV RMSE", f"{rmse:.2f}")
-        col_f3.metric("CV R²", f"{r2:.3f}")
-        st.caption(f"Best model: **{best_name}** (selected via {n_splits}-fold time-series CV)")
-
-        # ── Forecast interpretation ───────────────────────────────────────────
-=======
         _today = datetime.now()
         _nm = _today.replace(month=_today.month % 12 + 1,
                              year=_today.year + (_today.month // 12))
@@ -217,7 +189,6 @@ def render(city: CityConfig, geo: dict, area_map: dict):
         c3.metric("CV R²", f"{r2:.3f}")
         st.caption(f"Model: **{best_name}** · {n_splits}-fold time-series CV")
 
->>>>>>> Stashed changes
         r2_label = (
             "strong" if r2 >= 0.6 else
             "moderate" if r2 >= 0.3 else
@@ -227,24 +198,10 @@ def render(city: CityConfig, geo: dict, area_map: dict):
         trend_vs_latest = prediction - latest_val if not area_data[selected_crime].dropna().empty else 0
         chg_dir = "increase" if trend_vs_latest > 0 else "decrease"
         st.info(
-<<<<<<< Updated upstream
-            f"**Forecast interpretation:** The model predicts **{round(prediction)} {selected_crime} incidents** "
-            f"next month in {selected_area}, a **{abs(trend_vs_latest):.0f}-incident {chg_dir}** from last month. "
-            f"Cross-validated RMSE of {rmse:.2f} means predictions are typically off by ±{rmse:.1f} incidents. "
-            f"CV R² of {r2:.3f} indicates a **{r2_label}** fit"
-            + (" — the model captures temporal patterns well and forecasts are reliable."
-               if r2 >= 0.6
-               else (" — the model explains some variance; treat the forecast as a useful estimate."
-                     if r2 >= 0.3
-                     else (" — the model has limited explanatory power; treat the forecast as directional only."
-                           if r2 >= 0.0
-                           else " — the model performs worse than a simple average. Consider the forecast unreliable.")))
-=======
             f"**Forecast for {next_month_label}:** "
             f"**{round(prediction):,} {selected_crime}** in {selected_area} — "
             f"**{abs(trend_vs_latest):.0f}-incident {chg_dir}** from last month. "
             f"Typical error ±{rmse:.1f}. CV R² **{r2:.3f}** ({r2_label})."
->>>>>>> Stashed changes
         )
     else:
         st.info("Not enough data to generate a prediction.")
