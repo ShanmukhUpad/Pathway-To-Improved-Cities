@@ -2,120 +2,128 @@ import geopandas as gpd
 import file_loader
 import pandas as pd
 import json
-import numpy as np
-import requests
+import os
 import streamlit as st
 import plotly.express as px
-import plotly.graph_objects as go
 from streamlit.components.v1 import html
 import map_utils
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.model_selection import cross_val_score, KFold
-from sklearn.metrics import r2_score, mean_absolute_error
-from pathlib import Path
+from city_config import CityConfig
 import warnings
 warnings.filterwarnings('ignore')
 
-_HERE = Path(__file__).parent
-GEOJSON_PATH = _HERE / "chicago-community-areas.geojson"
-GEOJSON_URL  = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
-CSV_PATH     = _HERE / "censusChicago.csv"
+
+FEATURE_COLS = [
+    "PERCENT OF HOUSING CROWDED",
+    "PERCENT HOUSEHOLDS BELOW POVERTY",
+    "PERCENT AGED 16+ UNEMPLOYED",
+    "PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA",
+    "PERCENT AGED UNDER 18 OR OVER 64",
+    "PER CAPITA INCOME",
+]
+SHORT_NAMES = [
+    "Housing Crowded", "Below Poverty", "Unemployed 16+",
+    "No HS Diploma", "Under 18/Over 64", "Per Capita Income",
+]
 
 
-def _load_geojson() -> gpd.GeoDataFrame:
-    if GEOJSON_PATH.exists():
-        return gpd.read_file(GEOJSON_PATH)
-    return gpd.read_file(GEOJSON_URL)
-
-
-@st.cache_data(show_spinner="Loading community area boundaries...")
-def _load_geojson_dict():
-    """Fetch community area GeoJSON as a plain dict (for Plotly choropleth)."""
-    resp = requests.get(GEOJSON_URL, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+def _name_col(df: pd.DataFrame) -> str:
+    """Pick the column holding area names (Chicago uses 'COMMUNITY AREA NAME')."""
+    for c in ("COMMUNITY AREA NAME", "NAME", "Name"):
+        if c in df.columns:
+            return c
+    return df.columns[0]
 
 
 @st.cache_data
-def load_and_train():
-    gdf = _load_geojson()
-    df  = pd.read_csv(CSV_PATH)
-    gdf.columns = gdf.columns.str.strip()
-    df.columns  = df.columns.str.strip()
+def _load_and_train(city_key: str, csv_path: str, id_col: str, geo_json_str: str | None):
+    df = pd.read_csv(csv_path)
+    df.columns = df.columns.str.strip()
 
-    gdf["area_num_1"] = gdf["area_num_1"].fillna(0).astype(int)
+    if id_col not in df.columns:
+        raise ValueError(f"Census CSV missing id column `{id_col}`. Have: {list(df.columns)[:8]}")
 
-    df["Community Area Number"] = pd.to_numeric(
-        df["Community Area Number"], errors="coerce"
-    )
-    df = df.dropna(subset=["Community Area Number", "HARDSHIP INDEX"])
-    df["Community Area Number"] = df["Community Area Number"].astype(int)
+    df[id_col] = pd.to_numeric(df[id_col], errors="coerce")
+    needed = [id_col] + [c for c in FEATURE_COLS if c in df.columns] + (["HARDSHIP INDEX"] if "HARDSHIP INDEX" in df.columns else [])
+    df = df.dropna(subset=needed)
+    df[id_col] = df[id_col].astype(int)
 
-    if len(df) == 0:
-        raise ValueError(
-            "Census CSV loaded 0 usable rows after cleaning. "
-            f"Check that '{CSV_PATH}' exists and has numeric 'Community Area Number' values."
-        )
+    if df.empty:
+        raise ValueError("Census CSV cleaned to 0 rows.")
 
-    FEATURE_COLS = [
-        "PERCENT OF HOUSING CROWDED",
-        "PERCENT HOUSEHOLDS BELOW POVERTY",
-        "PERCENT AGED 16+ UNEMPLOYED",
-        "PERCENT AGED 25+ WITHOUT HIGH SCHOOL DIPLOMA",
-        "PERCENT AGED UNDER 18 OR OVER 64",
-        "PER CAPITA INCOME",
-    ]
-    SHORT_NAMES = [
-        "Housing Crowded", "Below Poverty", "Unemployed 16+",
-        "No HS Diploma", "Under 18/Over 64", "Per Capita Income"
-    ]
+    feat_present = [c for c in FEATURE_COLS if c in df.columns]
+    if "HARDSHIP INDEX" not in df.columns or len(feat_present) < 3:
+        # Not enough columns to train
+        return {
+            "df": df, "merged": None, "metrics": None,
+            "feature_names": [], "rf_importances": [], "gb_importances": [],
+            "scatter": [], "name_col": _name_col(df),
+        }
 
-    X = df[FEATURE_COLS]
+    X = df[feat_present]
     y = df["HARDSHIP INDEX"]
 
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     rf = RandomForestRegressor(n_estimators=200, max_depth=5, random_state=42)
     gb = GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, max_depth=3, random_state=42)
 
-    rf_r2  = cross_val_score(rf, X, y, cv=kf, scoring="r2").mean()
+    rf_r2 = cross_val_score(rf, X, y, cv=kf, scoring="r2").mean()
     rf_mae = -cross_val_score(rf, X, y, cv=kf, scoring="neg_mean_absolute_error").mean()
-    gb_r2  = cross_val_score(gb, X, y, cv=kf, scoring="r2").mean()
+    gb_r2 = cross_val_score(gb, X, y, cv=kf, scoring="r2").mean()
     gb_mae = -cross_val_score(gb, X, y, cv=kf, scoring="neg_mean_absolute_error").mean()
 
-    rf.fit(X, y)
-    gb.fit(X, y)
-
+    rf.fit(X, y); gb.fit(X, y)
     df = df.copy()
     df["RF_Predicted"] = rf.predict(X).round(1)
     df["GB_Predicted"] = gb.predict(X).round(1)
-    merged = gdf.merge(df, left_on="area_num_1", right_on="Community Area Number")
 
+    merged = None
+    if geo_json_str:
+        try:
+            gdf = gpd.read_file(geo_json_str, driver="GeoJSON")
+            # try to coerce join key
+            for cand in ("area_num_1", id_col, "GEOID", "GEOID10"):
+                if cand in gdf.columns:
+                    try:
+                        gdf[cand] = gdf[cand].astype(int)
+                        merged = gdf.merge(df, left_on=cand, right_on=id_col)
+                        break
+                    except (ValueError, TypeError):
+                        continue
+        except Exception:
+            merged = None
+
+    name_col = _name_col(df)
+    short_names = [SHORT_NAMES[FEATURE_COLS.index(c)] for c in feat_present]
     scatter = [
         {
-            "name":    row["COMMUNITY AREA NAME"],
+            "name":    str(row[name_col]),
             "actual":  float(row["HARDSHIP INDEX"]),
             "rf_pred": float(row["RF_Predicted"]),
             "gb_pred": float(row["GB_Predicted"]),
-            "poverty": float(row["PERCENT HOUSEHOLDS BELOW POVERTY"]),
-            "income":  int(row["PER CAPITA INCOME"]),
+            "poverty": float(row.get("PERCENT HOUSEHOLDS BELOW POVERTY", 0)),
+            "income":  int(row.get("PER CAPITA INCOME", 0)),
         }
         for _, row in df.iterrows()
     ]
 
     return {
-        "merged":        merged,
-        "df":            df,
-        "metrics":       {"rf": {"r2": round(rf_r2, 3), "mae": round(rf_mae, 2)},
-                          "gb": {"r2": round(gb_r2, 3), "mae": round(gb_mae, 2)}},
-        "feature_names": SHORT_NAMES,
+        "df": df, "merged": merged,
+        "metrics": {"rf": {"r2": round(rf_r2, 3), "mae": round(rf_mae, 2)},
+                    "gb": {"r2": round(gb_r2, 3), "mae": round(gb_mae, 2)}},
+        "feature_names": short_names,
         "rf_importances": [round(x, 4) for x in rf.feature_importances_.tolist()],
         "gb_importances": [round(x, 4) for x in gb.feature_importances_.tolist()],
-        "scatter":        scatter,
+        "scatter": scatter,
+        "name_col": name_col,
     }
 
 
-def render():
+def render(city: CityConfig, geo: dict | None = None):
+    mapbox_style = map_utils.mapbox_style_picker(key_prefix=f"socio_{city.key}")
 
+<<<<<<< Updated upstream
     with st.expander("Upload a supplemental dataset"):
         file_loader.uploader(
             domain="socioeconomics",
@@ -124,65 +132,53 @@ def render():
         )
 
     mapbox_style = map_utils.mapbox_style_picker(key_prefix="socio")
+=======
+    csv_path = city.census_path
+    if not os.path.exists(csv_path):
+        st.warning(f"No census CSV at `{csv_path}`.")
+        return
+>>>>>>> Stashed changes
 
-    _csv_missing = not CSV_PATH.exists()
-    if not _csv_missing:
-        try:
-            data = load_and_train()
-        except Exception as exc:
-            st.error(f"Failed to load socioeconomic data: {exc}")
-            _csv_missing = True
+    geo_str = json.dumps(geo) if geo and geo.get("features") else None
+    try:
+        data = _load_and_train(city.key, csv_path, city.census_id_col, geo_str)
+    except Exception as exc:
+        st.error(f"Census load failed: {exc}")
+        return
 
-    if not _csv_missing:
-        merged  = data["merged"]
-        metrics = data["metrics"]
+    st.markdown(f"# {city.name} — Socioeconomic Hardship")
 
-    st.markdown("""
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500;600&display=swap');
-            html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; background: #0e1117; color: #e8e8e8; }
-            h1, h2, h3 { font-family: 'DM Serif Display', serif; }
-            .metric-card {
-                background: #1a1f2e; border: 1px solid #2a3044;
-                border-radius: 12px; padding: 20px 24px; text-align: center;
-            }
-            .metric-card .label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #8892a4; margin-bottom: 4px; }
-            .metric-card .value { font-size: 2rem; font-weight: 600; color: #e8e8e8; line-height: 1; }
-            .metric-card .sub   { font-size: 12px; color: #5d6a84; margin-top: 4px; }
-        </style>
-    """, unsafe_allow_html=True)
+    if data["metrics"] is None:
+        st.info("Model skipped — census file missing required feature columns.")
+    else:
+        m = data["metrics"]
+        c1, c2 = st.columns(2)
+        c1.metric("RF — R²", f"{m['rf']['r2']:.3f}", help=f"MAE {m['rf']['mae']}")
+        c2.metric("GB — R²", f"{m['gb']['r2']:.3f}", help=f"MAE {m['gb']['mae']}")
 
-    st.markdown("# Chicago Community Hardship — ML Dashboard")
-
-    if _csv_missing:
-        st.warning(
-            "Missing `censusChicago.csv` — tabs 1-3 require this file. "
-            "Download **Census Data — Selected Socioeconomic Indicators in Chicago, 2008–2012** "
-            "from the Chicago Data Portal, save it as `censusChicago.csv` in `src/`, then refresh."
-        )
-
-    tab1, tab2, tab3 = st.tabs([
-        "Choropleth Map",
-        "Model Diagnostics",
-        "Feature Importance",
+    tab_map, tab_diag, tab_imp = st.tabs([
+        "Choropleth Map", "Model Diagnostics", "Feature Importance",
     ])
 
-    #  TAB 1: Map
-    with tab1:
-        if not _csv_missing:
-            model_choice = st.radio(
-                "Colour map by:",
+    # ── Map ─────────────────────────────────────────────────────────
+    with tab_map:
+        merged = data["merged"]
+        if merged is None or len(merged) == 0:
+            st.info(f"No boundary geometry available for {city.name} — choropleth skipped.")
+        else:
+            choice = st.radio(
+                "Color map by:",
                 ["Actual Hardship Index", "RF Predicted", "GB Predicted"],
-                horizontal=True,
+                horizontal=True, key=f"socio_choice_{city.key}",
             )
             col_map = {
                 "Actual Hardship Index": "HARDSHIP INDEX",
                 "RF Predicted":          "RF_Predicted",
                 "GB Predicted":          "GB_Predicted",
             }
-            chosen_col = col_map[model_choice]
-
+            chosen = col_map[choice]
             geojson_dict = merged.__geo_interface__
+<<<<<<< Updated upstream
 
             fig_main = px.choropleth_map(
                 merged, geojson=geojson_dict,
@@ -221,210 +217,160 @@ def render():
                     )
                     fig_pred.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=480)
                     st.plotly_chart(fig_pred, width="stretch")
-        else:
-            st.info("Load `censusChicago.csv` to view this tab.")
+=======
+            fig = px.choropleth_map(
+                merged, geojson=geojson_dict,
+                locations=city.census_id_col,
+                featureidkey=f"properties.{city.census_id_col}",
+                color=chosen, color_continuous_scale="YlOrRd",
+                map_style=mapbox_style,
+                zoom=city.zoom, center={"lat": city.center[0], "lon": city.center[1]},
+                opacity=0.7,
+                hover_name=data["name_col"] if data["name_col"] in merged.columns else None,
+                title=choice,
+            )
+            fig.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=620)
+            st.plotly_chart(fig, width="stretch")
 
-    # ── TAB 2: Model Diagnostics ──────────────────────────────────────
-    with tab2:
-        if not _csv_missing:
+    # ── Diagnostics ─────────────────────────────────────────────────
+    with tab_diag:
+        if not data["scatter"]:
+            st.info("No model diagnostics — feature columns missing.")
+>>>>>>> Stashed changes
+        else:
             scatter_json = json.dumps(data["scatter"])
             chart_html = f"""<!DOCTYPE html><html>
-            <head><style>
-              body {{ margin:0; background:#0e1117; font-family:'DM Sans',sans-serif; color:#e8e8e8; }}
-              .wrap {{ display:flex; gap:20px; padding:16px; }}
-              .panel {{ flex:1; background:#1a1f2e; border:1px solid #2a3044; border-radius:12px; padding:20px; }}
-              h3 {{ margin:0 0 14px; font-size:13px; font-weight:600; letter-spacing:.05em; color:#9eaec4; text-transform:uppercase; }}
-              canvas {{ display:block; }}
-              .tip {{
-                position:fixed; background:#1a1f2e; border:1px solid #3a4460;
-                border-radius:8px; padding:10px 14px; font-size:12px; pointer-events:none;
-                display:none; color:#e8e8e8; line-height:1.7; box-shadow:0 4px 20px #0008; z-index:9;
-              }}
-            </style></head>
-            <body>
-            <div id="tip" class="tip"></div>
-            <div class="wrap">
-              <div class="panel"><h3>Random Forest — Actual vs Predicted</h3><canvas id="c1" width="430" height="390"></canvas></div>
-              <div class="panel"><h3>Gradient Boosting — Actual vs Predicted</h3><canvas id="c2" width="430" height="390"></canvas></div>
-            </div>
-            <script>
-            const raw = {scatter_json};
-            const tip = document.getElementById('tip');
-
-            function draw(canvasId, predKey, color) {{
-              const cv = document.getElementById(canvasId);
-              const ctx = cv.getContext('2d');
-              const p = {{l:50,r:20,t:20,b:46}};
-              const W = cv.width - p.l - p.r, H = cv.height - p.t - p.b;
-
-              ctx.fillStyle='#0e1117'; ctx.fillRect(0,0,cv.width,cv.height);
-
-              ctx.strokeStyle='#2a3044'; ctx.lineWidth=1;
-              for(let i=0;i<=5;i++) {{
-                const x=p.l+W*i/5, y=p.t+H*i/5;
-                ctx.beginPath(); ctx.moveTo(x,p.t); ctx.lineTo(x,p.t+H); ctx.stroke();
-                ctx.beginPath(); ctx.moveTo(p.l,y); ctx.lineTo(p.l+W,y); ctx.stroke();
-              }}
-
-              // diagonal reference line
-              ctx.strokeStyle='#3a4460'; ctx.lineWidth=1.5; ctx.setLineDash([6,4]);
-              ctx.beginPath(); ctx.moveTo(p.l,p.t+H); ctx.lineTo(p.l+W,p.t); ctx.stroke();
-              ctx.setLineDash([]);
-
-              // axis tick labels
-              ctx.fillStyle='#5d6a84'; ctx.font='11px sans-serif'; ctx.textAlign='center';
-              for(let i=0;i<=5;i++) {{
-                const v=i*20;
-                ctx.fillText(v, p.l+W*i/5, p.t+H+16);
-                ctx.save(); ctx.translate(p.l-16, p.t+H-H*i/5);
-                ctx.rotate(-Math.PI/2); ctx.fillText(v,0,0); ctx.restore();
-              }}
-              ctx.fillStyle='#8892a4'; ctx.font='12px sans-serif';
-              ctx.fillText('Actual Hardship Index', p.l+W/2, p.t+H+36);
-              ctx.save(); ctx.translate(14,p.t+H/2); ctx.rotate(-Math.PI/2);
-              ctx.fillText('Predicted',0,0); ctx.restore();
-
-              // dots
-              const pts = raw.map(d => ({{
-                x: p.l + (d.actual/100)*W,
-                y: p.t + H - (d[predKey]/100)*H,
-                d
-              }}));
-              pts.forEach(pt => {{
-                ctx.beginPath(); ctx.arc(pt.x,pt.y,5.5,0,Math.PI*2);
-                ctx.fillStyle=color+'bb'; ctx.fill();
-                ctx.strokeStyle='#0e1117'; ctx.lineWidth=1; ctx.stroke();
-              }});
-
-              cv.onmousemove = e => {{
-                const r=cv.getBoundingClientRect();
-                const mx=e.clientX-r.left, my=e.clientY-r.top;
-                let best=null, minD=1e9;
-                pts.forEach(pt => {{
-                  const d=Math.hypot(pt.x-mx,pt.y-my);
-                  if(d<minD){{minD=d;best=pt;}}
-                }});
-                if(minD<16) {{
-                  tip.style.display='block';
-                  tip.style.left=(e.clientX+14)+'px';
-                  tip.style.top=(e.clientY-10)+'px';
-                  const err=(best.d.actual-best.d[predKey]).toFixed(1);
-                  tip.innerHTML=`<b>${{best.d.name}}</b><br>Actual: ${{best.d.actual}}<br>Predicted: ${{best.d[predKey]}}<br>Error: ${{err}}`;
-                }} else tip.style.display='none';
-              }};
-              cv.onmouseleave=()=>tip.style.display='none';
-            }}
-
-            draw('c1','rf_pred','#4f8ef7');
-            draw('c2','gb_pred','#f7934f');
-            </script></body></html>"""
+<head><style>
+  body {{ margin:0; background:#0e1117; font-family:'DM Sans',sans-serif; color:#e8e8e8; }}
+  .wrap {{ display:flex; gap:20px; padding:16px; }}
+  .panel {{ flex:1; background:#1a1f2e; border:1px solid #2a3044; border-radius:12px; padding:20px; }}
+  h3 {{ margin:0 0 14px; font-size:13px; font-weight:600; letter-spacing:.05em; color:#9eaec4; text-transform:uppercase; }}
+  canvas {{ display:block; }}
+  .tip {{ position:fixed; background:#1a1f2e; border:1px solid #3a4460; border-radius:8px;
+          padding:10px 14px; font-size:12px; pointer-events:none; display:none;
+          color:#e8e8e8; line-height:1.7; box-shadow:0 4px 20px #0008; z-index:9; }}
+</style></head><body>
+<div id="tip" class="tip"></div>
+<div class="wrap">
+  <div class="panel"><h3>Random Forest — Actual vs Predicted</h3><canvas id="c1" width="430" height="390"></canvas></div>
+  <div class="panel"><h3>Gradient Boosting — Actual vs Predicted</h3><canvas id="c2" width="430" height="390"></canvas></div>
+</div>
+<script>
+const raw = {scatter_json};
+const tip = document.getElementById('tip');
+function draw(canvasId, predKey, color) {{
+  const cv = document.getElementById(canvasId), ctx = cv.getContext('2d');
+  const p = {{l:50,r:20,t:20,b:46}};
+  const W = cv.width-p.l-p.r, H = cv.height-p.t-p.b;
+  ctx.fillStyle='#0e1117'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.strokeStyle='#2a3044';
+  for(let i=0;i<=5;i++){{const x=p.l+W*i/5,y=p.t+H*i/5;
+    ctx.beginPath();ctx.moveTo(x,p.t);ctx.lineTo(x,p.t+H);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(p.l,y);ctx.lineTo(p.l+W,y);ctx.stroke();}}
+  ctx.strokeStyle='#3a4460'; ctx.setLineDash([6,4]);
+  ctx.beginPath();ctx.moveTo(p.l,p.t+H);ctx.lineTo(p.l+W,p.t);ctx.stroke();
+  ctx.setLineDash([]);
+  const pts = raw.map(d => ({{x:p.l+(d.actual/100)*W, y:p.t+H-(d[predKey]/100)*H, d}}));
+  pts.forEach(pt=>{{ctx.beginPath();ctx.arc(pt.x,pt.y,5.5,0,Math.PI*2);
+    ctx.fillStyle=color+'bb';ctx.fill();ctx.strokeStyle='#0e1117';ctx.stroke();}});
+  cv.onmousemove=e=>{{const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+    let best=null,minD=1e9;
+    pts.forEach(pt=>{{const d=Math.hypot(pt.x-mx,pt.y-my);if(d<minD){{minD=d;best=pt;}}}});
+    if(minD<16){{tip.style.display='block';tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-10)+'px';
+      tip.innerHTML=`<b>${{best.d.name}}</b><br>Actual: ${{best.d.actual}}<br>Predicted: ${{best.d[predKey]}}`;}}
+    else tip.style.display='none';}};
+  cv.onmouseleave=()=>tip.style.display='none';
+}}
+draw('c1','rf_pred','#4f8ef7');
+draw('c2','gb_pred','#f7934f');
+</script></body></html>"""
             html(chart_html, height=450)
+
+    # ── Feature importance ─────────────────────────────────────────
+    with tab_imp:
+        if not data["feature_names"]:
+            st.info("No feature importance — model not trained.")
         else:
-            st.info("Load `censusChicago.csv` to view this tab.")
+            imp_html = f"""<!DOCTYPE html><html>
+<head><style>
+  body {{ margin:0; background:#0e1117; font-family:'DM Sans',sans-serif; color:#e8e8e8; padding:16px; }}
+  .wrap {{ display:flex; gap:20px; }}
+  .panel {{ flex:1; background:#1a1f2e; border:1px solid #2a3044; border-radius:12px; padding:24px; }}
+  h3 {{ margin:0 0 20px; font-size:13px; font-weight:600; letter-spacing:.06em; color:#9eaec4; text-transform:uppercase; }}
+  .row {{ margin-bottom:18px; }}
+  .lbl {{ font-size:13px; color:#c8d0de; margin-bottom:6px; display:flex; justify-content:space-between; }}
+  .track {{ background:#2a3044; border-radius:6px; height:11px; overflow:hidden; }}
+  .fill {{ height:100%; border-radius:6px; width:0%; transition:width .7s; }}
+</style></head><body>
+<div class="wrap">
+  <div class="panel" id="rfp"><h3>Random Forest — Feature Importance</h3></div>
+  <div class="panel" id="gbp"><h3>Gradient Boosting — Feature Importance</h3></div>
+</div>
+<script>
+const names = {json.dumps(data['feature_names'])};
+const rfImp = {json.dumps(data['rf_importances'])};
+const gbImp = {json.dumps(data['gb_importances'])};
+function renderBars(panelId, imps, grad) {{
+  const panel = document.getElementById(panelId);
+  const pairs = names.map((n,i)=>[n,imps[i]]).sort((a,b)=>b[1]-a[1]);
+  pairs.forEach(([name,val])=>{{
+    const pct=(val*100).toFixed(1);
+    const div=document.createElement('div'); div.className='row';
+    div.innerHTML=`<div class="lbl"><span>${{name}}</span><span>${{pct}}%</span></div>
+                   <div class="track"><div class="fill" style="background:${{grad}}" data-w="${{pct}}"></div></div>`;
+    panel.appendChild(div);
+  }});
+  setTimeout(()=>panel.querySelectorAll('.fill').forEach(el=>el.style.width=el.dataset.w+'%'),80);
+}}
+renderBars('rfp', rfImp, 'linear-gradient(90deg,#3a6fd8,#4f8ef7)');
+renderBars('gbp', gbImp, 'linear-gradient(90deg,#d86b3a,#f7934f)');
+</script></body></html>"""
+            html(imp_html, height=440)
 
-    # ── TAB 3: Feature Importance ─────────────────────────────────
-    with tab3:
-        if not _csv_missing:
-            importance_html = f"""<!DOCTYPE html><html>
-            <head><style>
-              body {{ margin:0; background:#0e1117; font-family:'DM Sans',sans-serif; color:#e8e8e8; padding:16px; }}
-              .wrap {{ display:flex; gap:20px; }}
-              .panel {{ flex:1; background:#1a1f2e; border:1px solid #2a3044; border-radius:12px; padding:24px; }}
-              h3 {{ margin:0 0 20px; font-size:13px; font-weight:600; letter-spacing:.06em; color:#9eaec4; text-transform:uppercase; }}
-              .row {{ margin-bottom:18px; }}
-              .lbl {{ font-size:13px; color:#c8d0de; margin-bottom:6px; display:flex; justify-content:space-between; }}
-              .track {{ background:#2a3044; border-radius:6px; height:11px; overflow:hidden; }}
-              .fill  {{ height:100%; border-radius:6px; width:0%; transition:width .7s cubic-bezier(.4,0,.2,1); }}
-              .note  {{ margin-top:20px; font-size:12px; color:#5d6a84; line-height:1.8; border-top:1px solid #2a3044; padding-top:14px; }}
-            </style></head>
-            <body>
-            <div class="wrap">
-              <div class="panel" id="rfp"><h3>Random Forest — Feature Importance</h3></div>
-              <div class="panel" id="gbp"><h3>Gradient Boosting — Feature Importance</h3></div>
-            </div>
-            <script>
-            const names = {json.dumps(data['feature_names'])};
-            const rfImp = {json.dumps(data['rf_importances'])};
-            const gbImp = {json.dumps(data['gb_importances'])};
-
-            function renderBars(panelId, imps, grad) {{
-              const panel = document.getElementById(panelId);
-              const pairs = names.map((n,i)=>[n,imps[i]]).sort((a,b)=>b[1]-a[1]);
-              pairs.forEach(([name,val])=>{{
-                const pct=(val*100).toFixed(1);
-                const div=document.createElement('div');
-                div.className='row';
-                div.innerHTML=`
-                  <div class="lbl"><span>${{name}}</span><span>${{pct}}%</span></div>
-                  <div class="track"><div class="fill" style="background:${{grad}}" data-w="${{pct}}"></div></div>`;
-                panel.appendChild(div);
-              }});
-              setTimeout(()=>panel.querySelectorAll('.fill').forEach(el=>el.style.width=el.dataset.w+'%'), 80);
-              panel.insertAdjacentHTML('beforeend',
-                `<div class="note">Importance = how much each feature reduced prediction error across all trees. A near-100% score for Per Capita Income means both models lean heavily on income to predict hardship.</div>`);
-            }}
-
-            renderBars('rfp', rfImp, 'linear-gradient(90deg,#3a6fd8,#4f8ef7)');
-            renderBars('gbp', gbImp, 'linear-gradient(90deg,#d86b3a,#f7934f)');
-            </script></body></html>"""
-            html(importance_html, height=440)
-        else:
-            st.info("Load `censusChicago.csv` to view this tab.")
-
-    # ── Scatterplots ─────────────────────────────────────────────────────
-    if not _csv_missing:
+    # ── Scatter ────────────────────────────────────────────────────
+    df_sc = data["df"]
+    if "HARDSHIP INDEX" in df_sc.columns and "PERCENT HOUSEHOLDS BELOW POVERTY" in df_sc.columns:
         st.divider()
         st.subheader("Socioeconomic Scatterplots")
-        df_scatter = data["df"]
-        col_sc1, col_sc2 = st.columns(2)
-
-        with col_sc1:
+        sc1, sc2 = st.columns(2)
+        with sc1:
             fig_pov = px.scatter(
-                df_scatter, x="PERCENT HOUSEHOLDS BELOW POVERTY", y="HARDSHIP INDEX",
-                hover_name="COMMUNITY AREA NAME",
-                color="PER CAPITA INCOME",
+                df_sc, x="PERCENT HOUSEHOLDS BELOW POVERTY", y="HARDSHIP INDEX",
+                hover_name=data["name_col"],
+                color="PER CAPITA INCOME" if "PER CAPITA INCOME" in df_sc.columns else None,
                 color_continuous_scale="RdYlGn_r",
-                title="Poverty Rate vs Hardship Index",
-                labels={"PERCENT HOUSEHOLDS BELOW POVERTY": "% Below Poverty",
-                        "HARDSHIP INDEX": "Hardship Index"},
+                title="Poverty vs Hardship",
             )
             fig_pov.update_layout(margin={"t": 30})
             st.plotly_chart(fig_pov, width="stretch")
+        with sc2:
+            if "PER CAPITA INCOME" in df_sc.columns:
+                fig_inc = px.scatter(
+                    df_sc, x="PER CAPITA INCOME", y="HARDSHIP INDEX",
+                    hover_name=data["name_col"],
+                    color="PERCENT AGED 16+ UNEMPLOYED" if "PERCENT AGED 16+ UNEMPLOYED" in df_sc.columns else None,
+                    color_continuous_scale="YlOrRd",
+                    title="Income vs Hardship",
+                )
+                fig_inc.update_layout(margin={"t": 30})
+                st.plotly_chart(fig_inc, width="stretch")
 
-        with col_sc2:
-            fig_inc = px.scatter(
-                df_scatter, x="PER CAPITA INCOME", y="HARDSHIP INDEX",
-                hover_name="COMMUNITY AREA NAME",
-                color="PERCENT AGED 16+ UNEMPLOYED",
-                color_continuous_scale="YlOrRd",
-                title="Per Capita Income vs Hardship Index",
-                labels={"PER CAPITA INCOME": "Per Capita Income ($)",
-                        "HARDSHIP INDEX": "Hardship Index"},
-            )
-            fig_inc.update_layout(margin={"t": 30})
-            st.plotly_chart(fig_inc, width="stretch")
-
-        st.info(
-            "**Socioeconomic relationships:** Higher poverty rates strongly correlate with higher hardship scores. "
-            "Per capita income shows a strong inverse relationship with hardship. Communities with both "
-            "low income and high poverty are the most vulnerable and should be prioritized for economic intervention."
-        )
-
-        # ── Moran's I Spatial Autocorrelation ────────────────────────────
-        st.divider()
-        try:
-            geojson_dict_moran = _load_geojson_dict()
-
-            merged["area_num_str"] = merged["area_num_1"].astype(str)
-            map_utils.render_moran_analysis(
-                gdf=merged,
-                value_col="HARDSHIP INDEX",
-                name_col="community",
-                id_col="area_num_str",
-                geojson=geojson_dict_moran,
-                featureidkey="properties.area_num_1",
-                key_prefix="socio_moran",
-                map_style=mapbox_style,
-            )
-        except Exception as exc:
-            st.warning(f"Could not compute spatial autocorrelation: {exc}")
+        # Moran's I — only if merged geometry exists
+        merged = data["merged"]
+        if merged is not None and len(merged) >= 10:
+            st.divider()
+            try:
+                merged = merged.copy()
+                merged["_id_str"] = merged[city.census_id_col].astype(str)
+                map_utils.render_moran_analysis(
+                    gdf=merged,
+                    value_col="HARDSHIP INDEX",
+                    name_col=data["name_col"] if data["name_col"] in merged.columns else city.census_id_col,
+                    id_col="_id_str",
+                    geojson=geo,
+                    featureidkey=f"properties.{city.census_id_col}",
+                    key_prefix=f"socio_moran_{city.key}",
+                    map_style=mapbox_style,
+                )
+            except Exception as exc:
+                st.warning(f"Moran's I unavailable: {exc}")

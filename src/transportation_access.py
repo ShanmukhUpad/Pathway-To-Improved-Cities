@@ -8,6 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import ml_predictor
 import map_utils
+from city_config import CityConfig
 
 _DATA = os.path.dirname(os.path.abspath(__file__))
 
@@ -78,14 +79,22 @@ def _load_ward_geojson():
     return resp.json()
 
 
-def render():
-    st.header("Transportation Access Analysis")
+def render(city: CityConfig):
+    st.header(f"Transportation Access — {city.name}")
+
+    if not city.has_transport_layer:
+        st.info(
+            f"Transit access layer (bus stops, bike-share, ward accessibility) is wired up "
+            f"for Chicago only. {city.name} datasets not yet ingested."
+        )
+        return
+
     st.markdown(
         "Bus stop coverage, Divvy bike-share distribution, bike route infrastructure, "
         "and ward-level accessibility across Chicago."
     )
 
-    mapbox_style = map_utils.mapbox_style_picker(key_prefix="transport_access")
+    mapbox_style = map_utils.mapbox_style_picker(key_prefix=f"transport_access_{city.key}")
 
     try:
         bus, divvy, bike, bus_per_ward, divvy_per_ward, merged = _load_and_process()
