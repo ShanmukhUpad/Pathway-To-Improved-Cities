@@ -4,6 +4,7 @@ pipeline {
     environment {
         IMAGE_NAME = "pathway-to-improved-cities"
         IMAGE_TAG  = "${env.BUILD_NUMBER}"
+        PYTHON_IMAGE = "python:3.11-slim"
         REGISTRY   = "" // e.g. "ghcr.io/aryan"  leave blank to skip push
     }
 
@@ -21,11 +22,20 @@ pipeline {
         stage('Lint') {
             steps {
                 sh '''
-                    python3 -m venv .venv-ci
-                    . .venv-ci/bin/activate
-                    pip install --quiet --upgrade pip
-                    pip install --quiet ruff
-                    ruff check src || true
+                    docker run --rm \
+                      -u "$(id -u):$(id -g)" \
+                      -e HOME=/tmp \
+                      -v "$PWD":/workspace \
+                      -w /workspace \
+                      ${PYTHON_IMAGE} \
+                      sh -lc '
+                        rm -rf .venv-ci
+                        python -m venv .venv-ci
+                        . .venv-ci/bin/activate
+                        pip install --quiet --upgrade pip
+                        pip install --quiet ruff
+                        ruff check src || true
+                      '
                 '''
             }
         }
@@ -33,9 +43,20 @@ pipeline {
         stage('Compile Check') {
             steps {
                 sh '''
-                    . .venv-ci/bin/activate
-                    pip install --quiet -r requirements.txt
-                    python -m compileall -q src
+                    docker run --rm \
+                      -u "$(id -u):$(id -g)" \
+                      -e HOME=/tmp \
+                      -v "$PWD":/workspace \
+                      -w /workspace \
+                      ${PYTHON_IMAGE} \
+                      sh -lc '
+                        rm -rf .venv-ci
+                        python -m venv .venv-ci
+                        . .venv-ci/bin/activate
+                        pip install --quiet --upgrade pip
+                        pip install --quiet -r requirements.txt
+                        python -m compileall -q src
+                      '
                 '''
             }
         }
@@ -43,9 +64,20 @@ pipeline {
         stage('Smoke Test') {
             steps {
                 sh '''
-                    . .venv-ci/bin/activate
-                    cd src
-                    python - <<'PY'
+                    docker run --rm \
+                      -u "$(id -u):$(id -g)" \
+                      -e HOME=/tmp \
+                      -v "$PWD":/workspace \
+                      -w /workspace \
+                      ${PYTHON_IMAGE} \
+                      sh -lc '
+                        rm -rf .venv-ci
+                        python -m venv .venv-ci
+                        . .venv-ci/bin/activate
+                        pip install --quiet --upgrade pip
+                        pip install --quiet -r requirements.txt
+                        cd src
+                        python - <<PY
 import warnings; warnings.filterwarnings("ignore")
 from city_config import CITIES, get_city, load_boundary
 for key in CITIES:
@@ -57,6 +89,7 @@ for key in CITIES:
     except Exception as e:
         print(f"[warn] {key}: {e}")
 PY
+                      '
                 '''
             }
         }
