@@ -1,4 +1,10 @@
+import io
 import os
+<<<<<<< Updated upstream
+=======
+import json
+from datetime import datetime
+>>>>>>> Stashed changes
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,34 +12,36 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, r2_score
 import plotly.express as px
 import geopandas as gpd
 import file_loader
 import ml_predictor
 import map_utils
-
-CRIME_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crime_monthly_pivot.csv")
+from city_config import CityConfig
 
 
 @st.cache_resource(show_spinner="Training crime prediction model...")
 def _train_crime_model(X_json: str, y_json: str):
-    """Train a RandomForest once and cache the fitted model."""
-    X = pd.read_json(X_json)
-    y = pd.read_json(y_json, typ="series")
+    X = pd.read_json(io.StringIO(X_json))
+    y = pd.read_json(io.StringIO(y_json), typ="series")
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X, y)
     return model
 
 
 @st.cache_data
-def _load_crime_data(area_map):
-    pivot = pd.read_csv(CRIME_CSV)
-    pivot['Community Area Name'] = pivot['Community Area'].map(area_map)
-    lag_crime_cols = [c for c in pivot.columns if c not in ['Community Area', 'Year', 'Month', 'Community Area Name']]
+def _load_crime_data(city_key: str, crime_path: str, area_map: dict, area_col: str):
+    from city_config import get_city
+    city = get_city(city_key)
+    pivot = pd.read_csv(crime_path)
+    pivot['_area_key'] = pivot[area_col].map(city.normalize_area_key)
+    pivot['Community Area Name'] = pivot['_area_key'].map(area_map)
+    skip = {area_col, '_area_key', 'Year', 'Month', 'Community Area Name'}
+    lag_crime_cols = [c for c in pivot.columns if c not in skip]
     for crime in lag_crime_cols:
-        grp = pivot.groupby('Community Area')[crime]
+        grp = pivot.groupby(area_col)[crime]
         pivot[f'{crime}_lag1'] = grp.shift(1)
         pivot[f'{crime}_lag3'] = grp.shift(3)
         pivot[f'{crime}_lag12'] = grp.shift(12)
@@ -43,19 +51,25 @@ def _load_crime_data(area_map):
     return pivot
 
 
-@st.cache_data(show_spinner="Loading community area geometries...")
-def _load_community_areas_gdf():
-    """Load Chicago community area polygons as a GeoDataFrame (cached)."""
-    geo_url = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
-    gdf_ca = gpd.read_file(geo_url)
-    gdf_ca["area_num_1"] = gdf_ca["area_num_1"].astype(int)
-    return gdf_ca
+@st.cache_data(show_spinner="Loading community geometries...")
+def _load_geo_gdf(city_key: str, geo_json_str: str, id_field: str, id_kind: str = "int"):
+    """Build GeoDataFrame from a serialized geojson dict (cache-friendly)."""
+    gdf = gpd.read_file(io.StringIO(geo_json_str), driver="GeoJSON")
+    if id_field in gdf.columns:
+        if id_kind == "int":
+            gdf[id_field] = pd.to_numeric(gdf[id_field], errors="coerce").astype("Int64")
+        elif id_kind == "upper_str":
+            gdf[id_field] = gdf[id_field].astype(str).str.strip().str.upper()
+        else:
+            gdf[id_field] = gdf[id_field].astype(str).str.strip()
+    return gdf
 
 
-def render(chicago_geo, area_map):
-    st.header("Public Safety Dashboard")
-    st.markdown("Analyze and forecast crime trends across Chicago community areas.")
+def render(city: CityConfig, geo: dict, area_map: dict):
+    st.header(f"Public Safety Dashboard — {city.name}")
+    st.markdown(f"Crime trends and forecasts across {city.name}.")
 
+<<<<<<< Updated upstream
     with st.expander("Upload a supplemental dataset"):
         file_loader.uploader(domain="public_safety", local_csv=None, label="Upload a public safety dataset")
 
@@ -68,61 +82,66 @@ def render(chicago_geo, area_map):
             st.rerun()
         except Exception as exc:
             st.error(f"Auto-fetch failed: {exc}")
+=======
+    crime_path = city.crime_path
+    if not os.path.exists(crime_path):
+        st.warning(f"No crime CSV at `{crime_path}`. Run data refresh.")
+>>>>>>> Stashed changes
         return
 
-    pivot = _load_crime_data(area_map)
+    area_col = city.crime_area_col
+    pivot = _load_crime_data(city.key, crime_path, area_map, area_col)
 
+    skip = {area_col, '_area_key', 'Year', 'Month', 'Community Area Name'}
     crime_cols = [
         c for c in pivot.columns
-        if c not in ['Community Area', 'Year', 'Month', 'Community Area Name']
-        and not c.endswith('_lag1')
-        and not c.endswith('_lag3')
-        and not c.endswith('_lag12')
-        and not c.endswith('_rolling3')
+        if c not in skip
+        and not c.endswith(('_lag1', '_lag3', '_lag12', '_rolling3'))
     ]
     community_areas = sorted(pivot['Community Area Name'].dropna().unique())
+    if not community_areas:
+        st.warning(
+            f"Crime CSV's `{area_col}` values do not match boundary IDs "
+            f"(`{city.boundary_id_field}`). Choropleth will be empty until "
+            "the area mapping is wired up for this city."
+        )
+        return
 
     col1, col2 = st.columns(2)
     with col1:
-        selected_area = st.selectbox("Select Community Area", community_areas, key="safety_area")
+        selected_area = st.selectbox("Select Area", community_areas, key=f"safety_area_{city.key}")
     with col2:
-        selected_crime = st.selectbox("Select Crime Type", crime_cols, key="safety_crime")
+        selected_crime = st.selectbox("Select Crime Type", crime_cols, key=f"safety_crime_{city.key}")
 
-    mapbox_style = map_utils.mapbox_style_picker(key_prefix="safety")
+    mapbox_style = map_utils.mapbox_style_picker(key_prefix=f"safety_{city.key}")
 
     area_data = pivot[pivot['Community Area Name'] == selected_area].sort_values(['Year', 'Month'])
 
     st.subheader(f"Historical {selected_crime} counts — {selected_area}")
     st.line_chart(area_data[selected_crime].values)
 
-    # ── Historical trend summary ──────────────────────────────────────────────
+    latest_val = mean_val = 0.0
     if not area_data[selected_crime].dropna().empty:
         series = area_data[selected_crime].dropna()
         latest_val = series.iloc[-1]
-        mean_val   = series.mean()
-        max_val    = series.max()
+        mean_val = series.mean()
+        max_val = series.max()
         pct_vs_mean = ((latest_val - mean_val) / mean_val * 100) if mean_val else 0
-        direction  = "above" if pct_vs_mean > 0 else "below"
+        direction = "above" if pct_vs_mean > 0 else "below"
         trend_color = "🔴" if pct_vs_mean > 10 else ("🟡" if pct_vs_mean > 0 else "🟢")
         st.info(
             f"{trend_color} **{selected_area} - {selected_crime} trend:** "
-            f"The most recent month recorded **{latest_val:.0f} incidents**, which is "
-            f"**{abs(pct_vs_mean):.1f}% {direction} the historical average** of {mean_val:.1f}. "
-            f"The all-time peak was **{max_val:.0f} incidents**. "
-            + ("This elevated level suggests increased enforcement or community intervention may be warranted."
-               if pct_vs_mean > 10
-               else ("Counts are near the historical average. Monitor for seasonal changes."
-                     if abs(pct_vs_mean) <= 10
-                     else "Counts are below the historical average, suggesting a positive trend."))
+            f"Most recent month recorded **{latest_val:.0f} incidents** — "
+            f"**{abs(pct_vs_mean):.1f}% {direction}** the historical average "
+            f"({mean_val:.1f}). All-time peak: **{max_val:.0f}**."
         )
 
-    # Prediction — lag features + annual seasonality + trend
     crime_upper = selected_crime.upper()
-    lag1_col     = f'{crime_upper}_lag1'
-    lag3_col     = f'{crime_upper}_lag3'
-    lag12_col    = f'{crime_upper}_lag12'
-    rolling3_col = f'{crime_upper}_rolling3'
-    candidate_features = [lag1_col, lag3_col, lag12_col, rolling3_col, 'Month', 'Year']
+    lag1, lag3, lag12, roll3 = (
+        f'{crime_upper}_lag1', f'{crime_upper}_lag3',
+        f'{crime_upper}_lag12', f'{crime_upper}_rolling3',
+    )
+    candidate_features = [lag1, lag3, lag12, roll3, 'Month', 'Year']
     feature_cols = [c for c in candidate_features if c in area_data.columns]
     model_data = area_data.dropna(subset=feature_cols + [selected_crime])
 
@@ -130,11 +149,8 @@ def render(chicago_geo, area_map):
         X = model_data[feature_cols].values
         y = model_data[selected_crime].values
 
-        # ── Model selection via time-series CV ────────────────────────────────
-        # Ridge can follow trends (extrapolate); RF cannot — try both, keep best.
         n_splits = min(5, max(2, len(X) // 6))
         tscv = TimeSeriesSplit(n_splits=n_splits)
-
         candidates = {
             "Ridge Regression": lambda: make_pipeline(StandardScaler(), Ridge(alpha=1.0)),
             "Random Forest":    lambda: RandomForestRegressor(n_estimators=100, random_state=42),
@@ -142,27 +158,23 @@ def render(chicago_geo, area_map):
 
         best_name, best_r2, best_rmse = None, -np.inf, np.inf
         for name, make_model in candidates.items():
-            fold_r2s, fold_rmses = [], []
-            for tr_idx, te_idx in tscv.split(X):
+            r2s, rmses = [], []
+            for tr, te in tscv.split(X):
                 m = make_model()
-                m.fit(X[tr_idx], y[tr_idx])
-                p = m.predict(X[te_idx])
-                fold_r2s.append(r2_score(y[te_idx], p))
-                fold_rmses.append(np.sqrt(mean_squared_error(y[te_idx], p)))
-            avg_r2 = float(np.mean(fold_r2s))
-            if avg_r2 > best_r2:
-                best_name = name
-                best_r2   = avg_r2
-                best_rmse = float(np.mean(fold_rmses))
+                m.fit(X[tr], y[tr])
+                p = m.predict(X[te])
+                r2s.append(r2_score(y[te], p))
+                rmses.append(np.sqrt(mean_squared_error(y[te], p)))
+            avg = float(np.mean(r2s))
+            if avg > best_r2:
+                best_name, best_r2, best_rmse = name, avg, float(np.mean(rmses))
 
-        r2   = best_r2
-        rmse = best_rmse
-
-        # Train winning model on ALL available data for the actual forecast
+        r2, rmse = best_r2, best_rmse
         model = candidates[best_name]()
         model.fit(X, y)
         prediction = max(0, model.predict(X[-1].reshape(1, -1))[0])
 
+<<<<<<< Updated upstream
         st.subheader(f"Predicted {selected_crime} counts for next month")
         col_f1, col_f2, col_f3 = st.columns(3)
         col_f1.metric("Forecast", round(prediction))
@@ -171,6 +183,41 @@ def render(chicago_geo, area_map):
         st.caption(f"Best model: **{best_name}** (selected via {n_splits}-fold time-series CV)")
 
         # ── Forecast interpretation ───────────────────────────────────────────
+=======
+        _today = datetime.now()
+        _nm = _today.replace(month=_today.month % 12 + 1,
+                             year=_today.year + (_today.month // 12))
+        next_month_label = _nm.strftime("%B %Y")
+        trend_vs_latest = prediction - latest_val
+        arrow = "▲" if trend_vs_latest >= 0 else "▼"
+        chg_dir = "increase" if trend_vs_latest >= 0 else "decrease"
+
+        st.markdown(f"""
+<div style="background:rgba(224,80,80,0.1); border-left:4px solid #e05050;
+            padding:18px 22px; border-radius:8px; margin:14px 0;">
+  <p style="margin:0; font-size:11px; color:#9eaec4; text-transform:uppercase;
+            letter-spacing:0.08em;">Crime Forecast — {next_month_label}</p>
+  <p style="margin:6px 0 2px; font-size:2.4rem; font-weight:800;
+            color:#ffffff; line-height:1.1;">
+    {round(prediction):,}
+    <span style="font-size:1.1rem; font-weight:500; color:#e08080;">
+      &nbsp;{selected_crime}
+    </span>
+  </p>
+  <p style="margin:2px 0 0; font-size:14px; color:#9eaec4;">
+    in <strong style="color:#ffffff;">{selected_area}</strong>
+    &nbsp;·&nbsp; {arrow} {abs(trend_vs_latest):.0f} incidents from last month
+  </p>
+</div>
+""", unsafe_allow_html=True)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Forecast", f"{round(prediction):,}")
+        c2.metric("CV RMSE", f"±{rmse:.1f}")
+        c3.metric("CV R²", f"{r2:.3f}")
+        st.caption(f"Model: **{best_name}** · {n_splits}-fold time-series CV")
+
+>>>>>>> Stashed changes
         r2_label = (
             "strong" if r2 >= 0.6 else
             "moderate" if r2 >= 0.3 else
@@ -180,6 +227,7 @@ def render(chicago_geo, area_map):
         trend_vs_latest = prediction - latest_val if not area_data[selected_crime].dropna().empty else 0
         chg_dir = "increase" if trend_vs_latest > 0 else "decrease"
         st.info(
+<<<<<<< Updated upstream
             f"**Forecast interpretation:** The model predicts **{round(prediction)} {selected_crime} incidents** "
             f"next month in {selected_area}, a **{abs(trend_vs_latest):.0f}-incident {chg_dir}** from last month. "
             f"Cross-validated RMSE of {rmse:.2f} means predictions are typically off by ±{rmse:.1f} incidents. "
@@ -191,202 +239,168 @@ def render(chicago_geo, area_map):
                      else (" — the model has limited explanatory power; treat the forecast as directional only."
                            if r2 >= 0.0
                            else " — the model performs worse than a simple average. Consider the forecast unreliable.")))
+=======
+            f"**Forecast for {next_month_label}:** "
+            f"**{round(prediction):,} {selected_crime}** in {selected_area} — "
+            f"**{abs(trend_vs_latest):.0f}-incident {chg_dir}** from last month. "
+            f"Typical error ±{rmse:.1f}. CV R² **{r2:.3f}** ({r2_label})."
+>>>>>>> Stashed changes
         )
     else:
         st.info("Not enough data to generate a prediction.")
 
-    # Crime Map
+    # ── Choropleth maps ──────────────────────────────────────────────────
     st.subheader("Crime Distribution Map")
+    feature_id_key = f"properties.{city.boundary_id_field}"
     col_map1, col_map2 = st.columns(2)
 
     with col_map1:
-        crime_map_type = st.selectbox("Crime type (historical map)", crime_cols, key="crime_map_select")
-        map_data = pivot.groupby('Community Area Name')[crime_map_type].sum().reset_index()
+        crime_map_type = st.selectbox(
+            "Crime type (historical)", crime_cols,
+            key=f"crime_map_select_{city.key}",
+        )
+        map_data = pivot.groupby(['_area_key', 'Community Area Name'])[crime_map_type].sum().reset_index()
+        map_data['_area_key'] = map_data['_area_key'].astype(str)
         fig = px.choropleth_map(
-            map_data, geojson=chicago_geo,
-            locations='Community Area Name', featureidkey="properties.community",
+            map_data, geojson=geo,
+            locations='_area_key', featureidkey=feature_id_key,
             color=crime_map_type, color_continuous_scale="Reds",
-            map_style=mapbox_style, zoom=9,
-            center={"lat": 41.8781, "lon": -87.6298}, opacity=0.5,
-            labels={crime_map_type: "Crime Count"}
+            map_style=mapbox_style, zoom=city.zoom,
+            center={"lat": city.center[0], "lon": city.center[1]}, opacity=0.5,
+            labels={crime_map_type: "Crime Count"},
+            hover_name='Community Area Name',
         )
         fig.update_coloraxes(colorbar_tickformat='.2f')
         st.plotly_chart(fig, width="stretch")
 
     with col_map2:
-        crime_pred_type = st.selectbox("Crime type (predicted map)", crime_cols, key="crime_map_pred_select")
-        crime_pred_type_upper = crime_pred_type.upper()
-        lag_cols = [f'{crime_pred_type_upper}_lag1', f'{crime_pred_type_upper}_lag3']
-        missing_lags = [col for col in lag_cols if col not in pivot.columns]
-
-        if missing_lags:
-            st.warning(f"No lag features found for '{crime_pred_type}'.")
+        crime_pred_type = st.selectbox(
+            "Crime type (predicted)", crime_cols,
+            key=f"crime_map_pred_select_{city.key}",
+        )
+        pred_upper = crime_pred_type.upper()
+        lag_cols = [f'{pred_upper}_lag1', f'{pred_upper}_lag3']
+        if any(c not in pivot.columns for c in lag_cols):
+            st.warning(f"No lag features for '{crime_pred_type}'.")
         else:
-            pred_data = pivot.dropna(subset=lag_cols + [crime_pred_type_upper])
+            pred_data = pivot.dropna(subset=lag_cols + [pred_upper])
             if pred_data.empty:
-                st.warning(f"Not enough data to predict for '{crime_pred_type}'.")
+                st.warning(f"Not enough data for '{crime_pred_type}'.")
             else:
                 pred_model = _train_crime_model(
                     pred_data[lag_cols].to_json(),
-                    pred_data[crime_pred_type_upper].to_json(),
+                    pred_data[pred_upper].to_json(),
                 )
-                latest_month = pivot.groupby('Community Area Name').tail(1).copy()
-                latest_month['Predicted'] = pred_model.predict(latest_month[lag_cols].fillna(0)).round(2)
+                latest_month = pivot.groupby('_area_key').tail(1).copy()
+                latest_month['Predicted'] = pred_model.predict(
+                    latest_month[lag_cols].fillna(0)
+                ).round(2)
+                latest_month['_area_key'] = latest_month['_area_key'].astype(str)
                 fig_pred = px.choropleth_map(
-                    latest_month[['Community Area Name', 'Predicted']],
-                    geojson=chicago_geo,
-                    locations='Community Area Name', featureidkey="properties.community",
+                    latest_month[['_area_key', 'Community Area Name', 'Predicted']],
+                    geojson=geo,
+                    locations='_area_key', featureidkey=feature_id_key,
                     color='Predicted', color_continuous_scale="Reds",
-                    map_style=mapbox_style, zoom=9,
-                    center={"lat": 41.8781, "lon": -87.6298}, opacity=0.5,
-                    labels={'Predicted': f'Predicted {crime_pred_type} Count'}
+                    map_style=mapbox_style, zoom=city.zoom,
+                    center={"lat": city.center[0], "lon": city.center[1]}, opacity=0.5,
+                    labels={'Predicted': f'Predicted {crime_pred_type}'},
+                    hover_name='Community Area Name',
                 )
                 fig_pred.update_coloraxes(colorbar_tickformat='.2f')
                 st.plotly_chart(fig_pred, width="stretch")
 
-                # ── Predicted map summary ─────────────────────────────────────
                 top_pred = latest_month.nlargest(3, "Predicted")[["Community Area Name", "Predicted"]]
                 top_names = ", ".join(
                     f"{r['Community Area Name']} ({r['Predicted']:.0f})"
                     for _, r in top_pred.iterrows()
                 )
-                st.info(
-                    f"**Predicted hotspots for {crime_pred_type} next month:** {top_names}. "
-                    "These areas have the highest forecasted incident counts based on recent lag patterns. "
-                    "Proactive resource allocation here may reduce impact."
-                )
+                st.info(f"**Predicted hotspots next month:** {top_names}.")
 
-    # ── Crime Scatterplots ────────────────────────────────────────────────────
+    # ── Scatter ─────────────────────────────────────────────────────────
     st.divider()
     st.subheader("Crime Scatterplots")
 
-    # Aggregate total crime count per community area for the selected crime type
-    scatter_agg = pivot.groupby("Community Area")[selected_crime].sum().reset_index()
-    scatter_agg.columns = ["Community Area", "Total Crime Count"]
-    scatter_agg["Community Area Name"] = scatter_agg["Community Area"].map(area_map)
+    scatter_agg = pivot.groupby(area_col)[selected_crime].sum().reset_index()
+    scatter_agg.columns = [area_col, "Total Crime Count"]
+    scatter_agg["_area_key"] = scatter_agg[area_col].map(city.normalize_area_key)
+    scatter_agg["Community Area Name"] = scatter_agg["_area_key"].map(area_map)
 
-    scatter_col1, scatter_col2 = st.columns(2)
-
-    with scatter_col1:
+    sc1, sc2 = st.columns(2)
+    with sc1:
         fig_sc1 = px.scatter(
-            scatter_agg,
-            x="Community Area",
-            y="Total Crime Count",
-            color="Community Area Name",
-            hover_name="Community Area Name",
-            hover_data={"Community Area": True, "Total Crime Count": True},
-            labels={
-                "Community Area": "Community Area Number",
-                "Total Crime Count": f"Total {selected_crime} Count",
-            },
-            title=f"Community Area vs Total {selected_crime}",
+            scatter_agg, x=area_col, y="Total Crime Count",
+            color="Community Area Name", hover_name="Community Area Name",
+            labels={area_col: "Area ID", "Total Crime Count": f"Total {selected_crime}"},
+            title=f"Area vs Total {selected_crime}",
         )
-        fig_sc1.update_layout(
-            showlegend=False,
-            margin={"t": 40, "b": 0},
-        )
+        fig_sc1.update_layout(showlegend=False, margin={"t": 40, "b": 0})
         st.plotly_chart(fig_sc1, width="stretch")
 
-    with scatter_col2:
-        # Build predicted vs actual scatter if predictions are available
-        crime_pred_upper = selected_crime.upper()
-        sc_lag_cols = [f"{crime_pred_upper}_lag1", f"{crime_pred_upper}_lag3"]
-        sc_missing = [c for c in sc_lag_cols if c not in pivot.columns]
-
-        if not sc_missing:
-            sc_pred_data = pivot.dropna(subset=sc_lag_cols + [crime_pred_upper])
-            if len(sc_pred_data) >= 6:
+    with sc2:
+        sc_lag = [f"{crime_upper}_lag1", f"{crime_upper}_lag3"]
+        if not all(c in pivot.columns for c in sc_lag):
+            st.info("Lag features unavailable.")
+        else:
+            sc_pred_data = pivot.dropna(subset=sc_lag + [crime_upper])
+            if len(sc_pred_data) < 6:
+                st.info("Not enough data.")
+            else:
                 sc_model = _train_crime_model(
-                    sc_pred_data[sc_lag_cols].to_json(),
-                    sc_pred_data[crime_pred_upper].to_json(),
+                    sc_pred_data[sc_lag].to_json(),
+                    sc_pred_data[crime_upper].to_json(),
                 )
                 sc_latest = pivot.groupby("Community Area Name").tail(1).copy()
-                sc_latest["Predicted"] = sc_model.predict(
-                    sc_latest[sc_lag_cols].fillna(0)
-                ).round(2)
+                sc_latest["Predicted"] = sc_model.predict(sc_latest[sc_lag].fillna(0)).round(2)
                 sc_latest["Actual"] = sc_latest[selected_crime]
 
                 fig_sc2 = px.scatter(
-                    sc_latest,
-                    x="Actual",
-                    y="Predicted",
-                    color="Community Area Name",
-                    hover_name="Community Area Name",
-                    hover_data={"Actual": True, "Predicted": True},
-                    labels={
-                        "Actual": f"Actual {selected_crime} Count",
-                        "Predicted": f"Predicted {selected_crime} Count",
-                    },
+                    sc_latest, x="Actual", y="Predicted",
+                    color="Community Area Name", hover_name="Community Area Name",
+                    labels={"Actual": f"Actual {selected_crime}",
+                            "Predicted": f"Predicted {selected_crime}"},
                     title=f"Actual vs Predicted {selected_crime}",
                 )
-                # Add a 45-degree reference line
-                max_val_sc = max(
-                    sc_latest["Actual"].max(),
-                    sc_latest["Predicted"].max(),
-                    1,
-                )
-                fig_sc2.add_shape(
-                    type="line",
-                    x0=0, y0=0,
-                    x1=max_val_sc, y1=max_val_sc,
-                    line=dict(color="gray", dash="dash"),
-                )
-                fig_sc2.update_layout(
-                    showlegend=False,
-                    margin={"t": 40, "b": 0},
-                )
+                max_v = max(sc_latest["Actual"].max(), sc_latest["Predicted"].max(), 1)
+                fig_sc2.add_shape(type="line", x0=0, y0=0, x1=max_v, y1=max_v,
+                                  line=dict(color="gray", dash="dash"))
+                fig_sc2.update_layout(showlegend=False, margin={"t": 40, "b": 0})
                 st.plotly_chart(fig_sc2, width="stretch")
-            else:
-                st.info("Not enough data to produce an actual vs predicted scatterplot.")
-        else:
-            st.info("Lag features not available for the selected crime type; cannot produce predicted scatterplot.")
 
-    # ── Moran's I Spatial Autocorrelation ────────────────────────────────────
+    # ── Moran's I ───────────────────────────────────────────────────────
     st.divider()
     try:
-        gdf_ca = _load_community_areas_gdf()
-
-        # Aggregate selected crime by community area
-        crime_by_ca = pivot.groupby("Community Area")[selected_crime].sum().reset_index()
-        crime_by_ca.columns = ["Community Area", "crime_total"]
-
+        gdf_ca = _load_geo_gdf(city.key, json.dumps(geo), city.boundary_id_field, city.area_id_kind)
+        crime_by_ca = pivot.groupby('_area_key')[selected_crime].sum().reset_index()
+        crime_by_ca.columns = ['_area_key', "crime_total"]
         gdf_merged = gdf_ca.merge(
             crime_by_ca,
-            left_on="area_num_1",
-            right_on="Community Area",
+            left_on=city.boundary_id_field, right_on='_area_key',
             how="inner",
         )
-        gdf_merged["area_num_str"] = gdf_merged["area_num_1"].astype(str)
-
+        gdf_merged["_id_str"] = gdf_merged[city.boundary_id_field].astype(str)
         if len(gdf_merged) >= 10:
             map_utils.render_moran_analysis(
                 gdf=gdf_merged,
                 value_col="crime_total",
-                name_col="community",
-                id_col="area_num_str",
-                geojson=chicago_geo,
-                featureidkey="properties.area_num_1",
-                key_prefix="safety_moran",
+                name_col=city.boundary_name_field,
+                id_col="_id_str",
+                geojson=geo,
+                featureidkey=f"properties.{city.boundary_id_field}",
+                key_prefix=f"safety_moran_{city.key}",
                 map_style=mapbox_style,
             )
         else:
-            st.warning("Not enough community areas with data to compute Moran's I (need at least 10).")
+            st.warning(f"Need ≥10 areas for Moran's I (have {len(gdf_merged)}).")
     except Exception as exc:
-        st.warning(f"Could not compute Moran's I: {exc}")
+        st.warning(f"Moran's I unavailable: {exc}")
 
-    # ── Generic ML predictor on the full crime pivot ──────────────────────────
-    base_crime_cols = [
-        c for c in pivot.columns
-        if c not in ['Community Area', 'Year', 'Month', 'Community Area Name']
-        and not c.endswith('_lag1')
-        and not c.endswith('_lag3')
-        and not c.endswith('_lag12')
-        and not c.endswith('_rolling3')
-    ]
+    # ── ML predictor ────────────────────────────────────────────────────
+    base_cols = [c for c in pivot.columns if c not in skip
+                 and not c.endswith(('_lag1', '_lag3', '_lag12', '_rolling3'))]
     lag_cols = [c for c in pivot.columns if c.endswith(('_lag1', '_lag3', '_lag12', '_rolling3'))]
     ml_predictor.render_predictor(
-        pivot.dropna(subset=lag_cols[:2] if lag_cols else base_crime_cols[:1]),
-        key_prefix="safety",
+        pivot.dropna(subset=lag_cols[:2] if lag_cols else base_cols[:1]),
+        key_prefix=f"safety_{city.key}",
         default_target=selected_crime,
-        default_features=lag_cols[:6] + ['Community Area', 'Year', 'Month'],
+        default_features=lag_cols[:6] + [area_col, 'Year', 'Month'],
     )
