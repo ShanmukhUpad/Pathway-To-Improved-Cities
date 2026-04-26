@@ -46,6 +46,7 @@ MONTH_LABELS = {
 MODEL_FILES = {
     "accident":    os.path.join(_SRC, "accident_occurrence_model.joblib"),
     "hit_and_run": os.path.join(_SRC, "gbc_hit_and_run_model.joblib"),
+    "forecast":    os.path.join(_SRC, "crash_forecast_model.joblib"),
 }
 
 # ── Known features per model (read from feature_names_in_ at load time) ────────
@@ -775,6 +776,151 @@ def render(chicago_geo=None):
     s2.success("Hit-and-run model loaded"          if model_hr  else "gbc_hit_and_run_model.joblib not found in src/")
 
     tab_eval, tab_predict = st.tabs(["Model Evaluation", "Make a Prediction"])
+
+    # ── Section 11: 30-Day Crash Forecast ─────────────────────────────────
+    st.divider()
+    st.subheader("📅 30-Day Crash Forecast")
+    st.markdown(
+        "Using a Random Forest model trained on historical daily crash counts, "
+        "this section forecasts the expected number of crashes per day over the "
+        "next 30 days. Predictions roll forward using lag and rolling-mean features."
+    )
+
+    forecast_model_path = os.path.join(_SRC, "daily_crash_forecasting_model.joblib")
+
+    if not os.path.exists(forecast_model_path):
+        st.info("Place `daily_crash_forecasting_model.joblib` in the `src/` folder to enable forecasting.")
+    else:
+        try:
+            forecast_model = joblib.load(forecast_model_path)
+
+            # ── Build daily crash count time series from raw CSV ───────────
+            path = _resolve_crash_csv()
+            raw = pd.read_csv(path, usecols=['CRASH_DATE'], low_memory=False)
+            raw['CRASH_DATE'] = pd.to_datetime(raw['CRASH_DATE'])
+            raw['DATE'] = raw['CRASH_DATE'].dt.normalize()
+
+            daily = (
+                raw.groupby('DATE').size()
+                .rename('crash_count')
+                .sort_index()
+            )
+
+            # Fill any missing dates with 0 so lags are always defined
+            full_idx = pd.date_range(daily.index.min(), daily.index.max(), freq='D')
+            daily = daily.reindex(full_idx, fill_value=0)
+
+            # ── Roll forward 30 days from the last known date ──────────────
+            last_date     = daily.index[-1]
+            history       = daily.copy()
+            forecast_dates  = []
+            forecast_values = []
+
+            for i in range(1, 31):
+                next_date = last_date + pd.Timedelta(days=i)
+
+                lag_1         = history.iloc[-1]
+                lag_7         = history.iloc[-7]  if len(history) >= 7  else history.mean()
+                rolling_mean_7 = history.iloc[-7:].mean()
+                rolling_std_7 = history.iloc[-7:].std() if len(history) >= 7 else 0.0
+
+                row = pd.DataFrame([{
+                    'day_of_week':    next_date.dayofweek,
+                    'month':          next_date.month,
+                    'lag_1':          lag_1,
+                    'lag_7':          lag_7,
+                    'rolling_mean_7': rolling_mean_7,
+                    'rolling_std_7':  rolling_std_7,
+                }])
+
+                pred = max(0, round(forecast_model.predict(row)[0]))
+
+                # Append predicted value so next iteration can use it as a lag
+                history = pd.concat([
+                    history,
+                    pd.Series([pred], index=[next_date])
+                ])
+
+                forecast_dates.append(next_date)
+                forecast_values.append(pred)
+
+            forecast_df = pd.DataFrame({
+                'Date':            forecast_dates,
+                'Predicted Crashes': forecast_values,
+            })
+
+            # ── Summary metrics ────────────────────────────────────────────
+            total_pred    = int(forecast_df['Predicted Crashes'].sum())
+            avg_pred      = forecast_df['Predicted Crashes'].mean()
+            peak_day      = forecast_df.loc[forecast_df['Predicted Crashes'].idxmax()]
+            recent_avg    = daily.iloc[-30:].mean()
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Predicted (30 days)", f"{total_pred:,}")
+            m2.metric("Daily Average",             f"{avg_pred:.1f}")
+            m3.metric("Peak Day",                  peak_day['Date'].strftime("%b %d"))
+            m4.metric("Peak Day Crashes",          int(peak_day['Predicted Crashes']))
+
+            # ── Forecast chart (with recent history for context) ───────────
+            history_window = daily.iloc[-60:].reset_index()
+            history_window.columns = ['Date', 'Crashes']
+
+            fig_forecast = go.Figure()
+
+            fig_forecast.add_trace(go.Scatter(
+                x=history_window['Date'],
+                y=history_window['Crashes'],
+                mode='lines',
+                name='Historical (last 60 days)',
+                line=dict(color='#fdae6b', width=2),
+            ))
+
+            fig_forecast.add_trace(go.Scatter(
+                x=forecast_df['Date'],
+                y=forecast_df['Predicted Crashes'],
+                mode='lines+markers',
+                name='Forecast (next 30 days)',
+                line=dict(color='#e6550d', width=2, dash='dash'),
+                marker=dict(size=5),
+            ))
+
+            # Vertical line at the forecast boundary
+            fig_forecast.add_vline(
+                x=last_date.timestamp() * 1000,
+                line_dash='dot',
+                line_color='gray',
+                annotation_text='Forecast start',
+                annotation_position='top left',
+            )
+
+            fig_forecast.update_layout(
+                title='Daily Crash Count — Historical vs Forecast',
+                xaxis_title='Date',
+                yaxis_title='Number of Crashes',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+                hovermode='x unified',
+            )
+            st.plotly_chart(fig_forecast, use_container_width=True)
+
+            # ── Day-by-day forecast table ──────────────────────────────────
+            with st.expander("View full day-by-day forecast"):
+                forecast_display = forecast_df.copy()
+                forecast_display['Date'] = forecast_display['Date'].dt.strftime('%A, %b %d %Y')
+                forecast_display['vs Recent Avg'] = forecast_display['Predicted Crashes'].apply(
+                    lambda x: f"+{x - recent_avg:.1f}" if x >= recent_avg else f"{x - recent_avg:.1f}"
+                )
+                st.dataframe(forecast_display, use_container_width=True, hide_index=True)
+
+            st.info(
+                f"Over the next 30 days, the model forecasts **{total_pred:,} total crashes** "
+                f"(avg **{avg_pred:.1f}/day**). "
+                f"The busiest predicted day is **{peak_day['Date'].strftime('%A, %B %d')}** "
+                f"with **{int(peak_day['Predicted Crashes'])} crashes**. "
+                f"Recent 30-day historical average was **{recent_avg:.1f} crashes/day**."
+            )
+
+        except Exception as exc:
+            st.warning(f"Forecasting failed: {exc}")
 
     # ── Tab 1: Evaluation on live data ────────────────────────────────────
     with tab_eval:
