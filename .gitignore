@@ -76,3 +76,16 @@ data/processed/
 *.dbf
 *.prj
 *.cpg
+
+# Whitelist per-city dashboard data (shipped with app)
+!src/**/*.csv
+!src/**/*.geojson
+
+# Legacy/duplicate data that pre-dates per-city restructure
+src/data/
+src/crime_monthly_pivot.csv
+src/traffic_crashes_latest.csv
+
+# Large crash CSVs — pulled at runtime by data_fetcher (>25 MB each)
+src/chicago/traffic_crashes_latest.csv
+src/new_york/traffic_crashes_latest.csv

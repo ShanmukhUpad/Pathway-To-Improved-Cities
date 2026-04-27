@@ -176,15 +176,111 @@ def _fetch_chicago_crashes(city: CityConfig, force: bool) -> str:
 
 
 # ──────────────────────────────────────────────
+# Generic Socrata ETL (NYC / LA / SF)
+# ──────────────────────────────────────────────
+
+def _fetch_crime_pivot_socrata(city: CityConfig, force: bool, *,
+                               area_field: str, date_field: str,
+                               type_field: str) -> str:
+    """Pull crime rows from Socrata and pivot to area×month×type counts."""
+    out = city.crime_path
+    if not force and not is_stale(out):
+        print(f"[{city.key}/crimes] up to date — {out}")
+        return out
+
+    print(f"[{city.key}/crimes] fetching...")
+    start = f"{datetime.now().year - 2}-01-01T00:00:00"
+    token = os.environ.get(city.token_env, "")
+
+    df = _fetch_socrata(
+        city.soda_portal, city.crime_dataset_id,
+        params={
+            "$where":  f"{date_field} >= '{start}'",
+            "$select": f"{area_field},{date_field},{type_field}",
+        },
+        token=token,
+    )
+    if df.empty:
+        print(f"[{city.key}/crimes] no rows")
+        return out
+
+    df = df.rename(columns={area_field: "_area", date_field: "_date", type_field: "_type"})
+    df["_date"] = pd.to_datetime(df["_date"], errors="coerce")
+    df.dropna(subset=["_area", "_date", "_type"], inplace=True)
+    df["Year"] = df["_date"].dt.year.astype(int)
+    df["Month"] = df["_date"].dt.month.astype(int)
+    df["_type"] = df["_type"].astype(str).str.upper().str.strip()
+
+    counts = (df.groupby(["_area", "Year", "Month", "_type"])
+                .size().reset_index(name="count"))
+    pivot = counts.pivot_table(
+        index=["_area", "Year", "Month"],
+        columns="_type", values="count", fill_value=0,
+    ).reset_index()
+    pivot.columns.name = None
+    pivot.rename(columns={"_area": city.crime_area_col}, inplace=True)
+    pivot.columns = [c if c in (city.crime_area_col, "Year", "Month") else str(c).upper()
+                     for c in pivot.columns]
+
+    _ensure_dir(out)
+    pivot.to_csv(out, index=False)
+    print(f"[{city.key}/crimes] saved {len(pivot):,} rows → {out}")
+    return out
+
+
+def _fetch_crash_socrata(city: CityConfig, force: bool, *,
+                         date_field: str) -> str:
+    """Pull crash rows from Socrata, save raw with normalized CRASH_DATE."""
+    out = city.crash_path
+    if not force and not is_stale(out):
+        print(f"[{city.key}/crashes] up to date — {out}")
+        return out
+
+    print(f"[{city.key}/crashes] fetching...")
+    start = f"{datetime.now().year - 1}-01-01T00:00:00"
+    token = os.environ.get(city.token_env, "")
+
+    df = _fetch_socrata(
+        city.soda_portal, city.crash_dataset_id,
+        params={"$where": f"{date_field} >= '{start}'"},
+        token=token,
+    )
+    if df.empty:
+        print(f"[{city.key}/crashes] no rows")
+        return out
+
+    df.columns = [c.upper() for c in df.columns]
+    date_col = date_field.upper()
+    if date_col != "CRASH_DATE" and date_col in df.columns:
+        df["CRASH_DATE"] = df[date_col]
+
+    _ensure_dir(out)
+    df.to_csv(out, index=False)
+    print(f"[{city.key}/crashes] saved {len(df):,} rows → {out}")
+    return out
+
+
+# ──────────────────────────────────────────────
 # Per-city dispatch
 # ──────────────────────────────────────────────
 
-# City-specific ETL recipes. Add entries here when wiring NYC/LA/SF refresh.
 _CRIME_FETCHERS = {
     "chicago": _fetch_chicago_crimes,
+    "new_york":      lambda c, f: _fetch_crime_pivot_socrata(
+        c, f, area_field="addr_pct_cd",
+        date_field="cmplnt_fr_dt", type_field="ofns_desc"),
+    "los_angeles":   lambda c, f: _fetch_crime_pivot_socrata(
+        c, f, area_field="area_name",
+        date_field="date_occ", type_field="crm_cd_desc"),
+    "san_francisco": lambda c, f: _fetch_crime_pivot_socrata(
+        c, f, area_field="analysis_neighborhood",
+        date_field="incident_datetime", type_field="incident_category"),
 }
 _CRASH_FETCHERS = {
     "chicago": _fetch_chicago_crashes,
+    "new_york":      lambda c, f: _fetch_crash_socrata(c, f, date_field="crash_date"),
+    "los_angeles":   lambda c, f: _fetch_crash_socrata(c, f, date_field="date_occ"),
+    "san_francisco": lambda c, f: _fetch_crash_socrata(c, f, date_field="collision_datetime"),
 }
 
 
