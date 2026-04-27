@@ -17,10 +17,30 @@ st.set_page_config(
 
 map_utils.init_mapbox()
 
+# ── Auto-refresh on startup ───────────────────────────────────────────────────
+# Background thread refreshes stale CSVs from Chicago Data Portal on each launch.
+# The thread only does disk I/O — all st.* calls happen on the render thread below.
+data_fetcher.start_background_refresh()
+
+if data_fetcher._refresh_done.is_set():
+    data_fetcher._refresh_done.clear()
+    st.cache_data.clear()
+    if st.session_state.get("_init_done"):
+        st.rerun()
+    st.session_state["_init_done"] = True
+
+
+# Production 6 AM scheduler — singleton across all Streamlit sessions in the process
+@st.cache_resource
+def _get_scheduler():
+    return data_fetcher.start_scheduler()
+
+_get_scheduler()
+
 st.title("Pathway to Improved Cities Dashboard")
 
 # ──────────────────────────────────────────────
-# Sidebar: live data refresh
+# Sidebar: data freshness info
 # ──────────────────────────────────────────────
 
 with st.sidebar:
@@ -31,15 +51,8 @@ with st.sidebar:
         f"**Crash data** — last updated: `{data_fetcher.last_updated(data_fetcher.CRASH_OUT)}`"
     )
 
-    if st.button("Refresh from Chicago Data Portal", width="stretch"):
-        with st.spinner("Fetching latest data…"):
-            try:
-                data_fetcher.refresh_all(force=True)
-                st.cache_data.clear()
-                st.success("Data refreshed!")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Refresh failed: {exc}")
+    if data_fetcher._refresh_lock.locked():
+        st.caption("Refreshing data in background…")
 
     st.caption(
         "Data source: [Chicago Data Portal](https://data.cityofchicago.org)  \n"
@@ -92,11 +105,12 @@ area_map = {
 # Tab layout
 # ──────────────────────────────────────────────
 
-tab_safety, tab_transport, tab_infra, tab_socio = st.tabs([
+tab_safety, tab_transport, tab_infra, tab_socio, tab_upload = st.tabs([
     "Public Safety",
     "Transportation",
     "Infrastructure",
-    "Socioeconomics & Diversity"
+    "Socioeconomics & Diversity",
+    "Data Upload",
 ])
 
 
@@ -128,9 +142,6 @@ with tab_infra:
         "Track infrastructure quality, 311 service requests, building permits, and public facility conditions."
     )
 
-    with st.expander("Upload a supplemental dataset"):
-        file_loader.uploader(domain="infrastructure", local_csv=None, label="Upload an infrastructure dataset")
-
     st.info(
         "No infrastructure dataset loaded yet.\n\n"
         "**To connect data:** Place a file named `infrastructure_monthly.csv` in the working directory.\n\n"
@@ -149,4 +160,22 @@ with tab_infra:
 
 with tab_socio:
     socieoeconomic.render()
-    
+
+
+# ══════════════════════════════════════════════
+# TAB 5 — DATA UPLOAD
+# ══════════════════════════════════════════════
+
+with tab_upload:
+    st.header("Data Upload & Analysis")
+    st.markdown(
+        "Upload any dataset for automated analysis and future-value forecasting. "
+        "If your dataset has a date or time column, the system will train a time-series model "
+        "and forecast future periods. If no date is found, you can designate a time-ordering column "
+        "or run a cross-sectional relationship analysis."
+    )
+    file_loader.uploader(
+        domain="upload",
+        local_csv=None,
+        label="Upload a dataset (CSV, Parquet, GeoJSON, or Shapefile)",
+    )

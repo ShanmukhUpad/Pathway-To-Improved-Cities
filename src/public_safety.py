@@ -1,17 +1,30 @@
 import os
+from datetime import datetime
 import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import Ridge
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, r2_score
 import plotly.express as px
 import geopandas as gpd
-import file_loader
 import ml_predictor
 import map_utils
 
 CRIME_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crime_monthly_pivot.csv")
+
+
+@st.cache_resource(show_spinner="Training crime prediction model...")
+def _train_crime_model(X_json: str, y_json: str):
+    """Train a RandomForest once and cache the fitted model."""
+    X = pd.read_json(X_json)
+    y = pd.read_json(y_json, typ="series")
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X, y)
+    return model
 
 
 @st.cache_data
@@ -20,8 +33,13 @@ def _load_crime_data(area_map):
     pivot['Community Area Name'] = pivot['Community Area'].map(area_map)
     lag_crime_cols = [c for c in pivot.columns if c not in ['Community Area', 'Year', 'Month', 'Community Area Name']]
     for crime in lag_crime_cols:
-        pivot[f'{crime}_lag1'] = pivot.groupby('Community Area')[crime].shift(1)
-        pivot[f'{crime}_lag3'] = pivot.groupby('Community Area')[crime].shift(3)
+        grp = pivot.groupby('Community Area')[crime]
+        pivot[f'{crime}_lag1'] = grp.shift(1)
+        pivot[f'{crime}_lag3'] = grp.shift(3)
+        pivot[f'{crime}_lag12'] = grp.shift(12)
+        pivot[f'{crime}_rolling3'] = grp.transform(
+            lambda s: s.shift(1).rolling(3, min_periods=1).mean()
+        )
     return pivot
 
 
@@ -37,9 +55,6 @@ def _load_community_areas_gdf():
 def render(chicago_geo, area_map):
     st.header("Public Safety Dashboard")
     st.markdown("Analyze and forecast crime trends across Chicago community areas.")
-
-    with st.expander("Upload a supplemental dataset"):
-        file_loader.uploader(domain="public_safety", local_csv=None, label="Upload a public safety dataset")
 
     if not os.path.exists(CRIME_CSV):
         st.info("No local crime data found. Fetching the latest data from the Chicago Data Portal…")
@@ -59,6 +74,8 @@ def render(chicago_geo, area_map):
         if c not in ['Community Area', 'Year', 'Month', 'Community Area Name']
         and not c.endswith('_lag1')
         and not c.endswith('_lag3')
+        and not c.endswith('_lag12')
+        and not c.endswith('_rolling3')
     ]
     community_areas = sorted(pivot['Community Area Name'].dropna().unique())
 
@@ -96,55 +113,103 @@ def render(chicago_geo, area_map):
                      else "Counts are below the historical average, suggesting a positive trend."))
         )
 
-    # Prediction — use only the selected crime's own lag features + Month for seasonality
+    # Prediction — lag features + annual seasonality + trend
     crime_upper = selected_crime.upper()
-    lag1_col = f'{crime_upper}_lag1'
-    lag3_col = f'{crime_upper}_lag3'
-    feature_cols = [c for c in [lag1_col, lag3_col, 'Month'] if c in area_data.columns]
+    lag1_col     = f'{crime_upper}_lag1'
+    lag3_col     = f'{crime_upper}_lag3'
+    lag12_col    = f'{crime_upper}_lag12'
+    rolling3_col = f'{crime_upper}_rolling3'
+    candidate_features = [lag1_col, lag3_col, lag12_col, rolling3_col, 'Month', 'Year']
+    feature_cols = [c for c in candidate_features if c in area_data.columns]
     model_data = area_data.dropna(subset=feature_cols + [selected_crime])
 
-    if len(model_data) >= 6:
+    if len(model_data) >= 10:
         X = model_data[feature_cols].values
         y = model_data[selected_crime].values
 
-        # Chronological split: train on earlier months, test on most recent 20%
-        split = max(1, int(len(X) * 0.8))
-        X_train, X_test = X[:split], X[split:]
-        y_train, y_test = y[:split], y[split:]
+        # ── Model selection via time-series CV ────────────────────────────────
+        # Ridge can follow trends (extrapolate); RF cannot — try both, keep best.
+        n_splits = min(5, max(2, len(X) // 6))
+        tscv = TimeSeriesSplit(n_splits=n_splits)
 
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-        model.fit(X_train, y_train)
+        candidates = {
+            "Ridge Regression": lambda: make_pipeline(StandardScaler(), Ridge(alpha=1.0)),
+            "Random Forest":    lambda: RandomForestRegressor(n_estimators=100, random_state=42),
+        }
 
-        if len(X_test) >= 2:
-            y_pred = model.predict(X_test)
-            rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
-            r2 = float(r2_score(y_test, y_pred))
-        else:
-            rmse = r2 = None
+        best_name, best_r2, best_rmse = None, -np.inf, np.inf
+        for name, make_model in candidates.items():
+            fold_r2s, fold_rmses = [], []
+            for tr_idx, te_idx in tscv.split(X):
+                m = make_model()
+                m.fit(X[tr_idx], y[tr_idx])
+                p = m.predict(X[te_idx])
+                fold_r2s.append(r2_score(y[te_idx], p))
+                fold_rmses.append(np.sqrt(mean_squared_error(y[te_idx], p)))
+            avg_r2 = float(np.mean(fold_r2s))
+            if avg_r2 > best_r2:
+                best_name = name
+                best_r2   = avg_r2
+                best_rmse = float(np.mean(fold_rmses))
 
-        prediction = model.predict(X[-1].reshape(1, -1))[0]
-        st.subheader(f"Predicted {selected_crime} counts for next month")
-        col_f1, col_f2, col_f3 = st.columns(3)
-        col_f1.metric("Forecast", round(prediction))
-        if rmse is not None:
-            col_f2.metric("RMSE", f"{rmse:.2f}")
-            col_f3.metric("R²", f"{r2:.3f}")
+        r2   = best_r2
+        rmse = best_rmse
 
-        # ── Forecast interpretation ───────────────────────────────────────────
-        r2_label  = "strong" if r2 and r2 >= 0.1 else ("weak" if r2 and r2 > 0 else "no correlation")
+        # Train winning model on ALL available data for the actual forecast
+        model = candidates[best_name]()
+        model.fit(X, y)
+        prediction = max(0, model.predict(X[-1].reshape(1, -1))[0])
+
+        # Compute the actual next-month label (e.g., "May 2026")
+        _today = datetime.now()
+        _nm    = _today.replace(month=_today.month % 12 + 1,
+                                year=_today.year + (_today.month // 12))
+        next_month_label = _nm.strftime("%B %Y")
+
         trend_vs_latest = prediction - latest_val if not area_data[selected_crime].dropna().empty else 0
-        chg_dir   = "increase" if trend_vs_latest > 0 else "decrease"
+        arrow   = "▲" if trend_vs_latest >= 0 else "▼"
+        chg_dir = "increase" if trend_vs_latest >= 0 else "decrease"
+
+        # ── Prominent headline ────────────────────────────────────────────────
+        st.markdown(f"""
+<div style="background:rgba(224,80,80,0.1); border-left:4px solid #e05050;
+            padding:18px 22px; border-radius:8px; margin:14px 0;">
+  <p style="margin:0; font-size:11px; color:#9eaec4; text-transform:uppercase;
+            letter-spacing:0.08em;">Crime Forecast — {next_month_label}</p>
+  <p style="margin:6px 0 2px; font-size:2.4rem; font-weight:800;
+            color:#ffffff; line-height:1.1;">
+    {round(prediction):,}
+    <span style="font-size:1.1rem; font-weight:500; color:#e08080;">
+      &nbsp;{selected_crime}
+    </span>
+  </p>
+  <p style="margin:2px 0 0; font-size:14px; color:#9eaec4;">
+    in <strong style="color:#ffffff;">{selected_area}</strong>
+    &nbsp;·&nbsp; {arrow} {abs(trend_vs_latest):.0f} incidents from last month
+  </p>
+</div>
+""", unsafe_allow_html=True)
+
+        # ── Supporting metrics ────────────────────────────────────────────────
+        col_f1, col_f2, col_f3 = st.columns(3)
+        col_f1.metric("Forecast", f"{round(prediction):,}")
+        col_f2.metric("CV RMSE", f"±{rmse:.1f}")
+        col_f3.metric("CV R²", f"{r2:.3f}")
+        st.caption(f"Model: **{best_name}** · {n_splits}-fold time-series CV")
+
+        # ── Interpretation ────────────────────────────────────────────────────
+        r2_label = (
+            "strong" if r2 >= 0.6 else
+            "moderate" if r2 >= 0.3 else
+            "weak" if r2 >= 0.0 else
+            "poor (worse than baseline)"
+        )
         st.info(
-            f"**Forecast interpretation:** The model predicts **{round(prediction)} {selected_crime} incidents** "
-            f"next month in {selected_area}, a **{abs(trend_vs_latest):.0f}-incident {chg_dir}** from last month. "
-            + (f"An RMSE of {rmse:.2f} means predictions are typically off by plus or minus {rmse:.1f} incidents. "
-               f"An R² of {r2:.3f} indicates a **{r2_label}** fit: "
-               + ("the model captures the crime pattern well and forecasts are reliable."
-                  if r2 >= 0.1
-                  else ("the model shows a weak relationship. Treat the forecast as directional only."
-                        if r2 > 0
-                        else "the model shows no explanatory power. The forecast should not be relied upon."))
-               if rmse is not None else "")
+            f"**What this means:** In **{next_month_label}**, the model expects "
+            f"**{round(prediction):,} {selected_crime} incidents** in {selected_area} — "
+            f"a **{abs(trend_vs_latest):.0f}-incident {chg_dir}** from last month. "
+            f"Typical prediction error: ±{rmse:.1f} incidents (CV RMSE). "
+            f"Model fit (CV R²): **{r2:.3f}** — {r2_label}."
         )
     else:
         st.info("Not enough data to generate a prediction.")
@@ -180,8 +245,10 @@ def render(chicago_geo, area_map):
             if pred_data.empty:
                 st.warning(f"Not enough data to predict for '{crime_pred_type}'.")
             else:
-                pred_model = RandomForestRegressor(n_estimators=100, random_state=42)
-                pred_model.fit(pred_data[lag_cols], pred_data[crime_pred_type_upper])
+                pred_model = _train_crime_model(
+                    pred_data[lag_cols].to_json(),
+                    pred_data[crime_pred_type_upper].to_json(),
+                )
                 latest_month = pivot.groupby('Community Area Name').tail(1).copy()
                 latest_month['Predicted'] = pred_model.predict(latest_month[lag_cols].fillna(0)).round(2)
                 fig_pred = px.choropleth_map(
@@ -248,8 +315,10 @@ def render(chicago_geo, area_map):
         if not sc_missing:
             sc_pred_data = pivot.dropna(subset=sc_lag_cols + [crime_pred_upper])
             if len(sc_pred_data) >= 6:
-                sc_model = RandomForestRegressor(n_estimators=100, random_state=42)
-                sc_model.fit(sc_pred_data[sc_lag_cols], sc_pred_data[crime_pred_upper])
+                sc_model = _train_crime_model(
+                    sc_pred_data[sc_lag_cols].to_json(),
+                    sc_pred_data[crime_pred_upper].to_json(),
+                )
                 sc_latest = pivot.groupby("Community Area Name").tail(1).copy()
                 sc_latest["Predicted"] = sc_model.predict(
                     sc_latest[sc_lag_cols].fillna(0)
@@ -330,8 +399,10 @@ def render(chicago_geo, area_map):
         if c not in ['Community Area', 'Year', 'Month', 'Community Area Name']
         and not c.endswith('_lag1')
         and not c.endswith('_lag3')
+        and not c.endswith('_lag12')
+        and not c.endswith('_rolling3')
     ]
-    lag_cols = [c for c in pivot.columns if c.endswith('_lag1') or c.endswith('_lag3')]
+    lag_cols = [c for c in pivot.columns if c.endswith(('_lag1', '_lag3', '_lag12', '_rolling3'))]
     ml_predictor.render_predictor(
         pivot.dropna(subset=lag_cols[:2] if lag_cols else base_crime_cols[:1]),
         key_prefix="safety",
