@@ -109,6 +109,45 @@ def _load_geo_gdf_crash(city_key: str, geo_json_str: str, id_field: str):
     return gdf
 
 
+@st.cache_data(show_spinner="Loading crash coordinates...")
+def _load_crash_coords(city_key: str, path: str,
+                      lat_bounds: tuple, lon_bounds: tuple):
+    raw = pd.read_csv(path, usecols=["LATITUDE", "LONGITUDE"], low_memory=False)
+    raw["LATITUDE"] = pd.to_numeric(raw["LATITUDE"], errors="coerce")
+    raw["LONGITUDE"] = pd.to_numeric(raw["LONGITUDE"], errors="coerce")
+    coords = raw.dropna(subset=["LATITUDE", "LONGITUDE"])
+    lat_lo, lat_hi = lat_bounds
+    lon_lo, lon_hi = lon_bounds
+    coords = coords[
+        (coords["LATITUDE"] > lat_lo) & (coords["LATITUDE"] < lat_hi) &
+        (coords["LONGITUDE"] > lon_lo) & (coords["LONGITUDE"] < lon_hi)
+    ]
+    return coords.reset_index(drop=True)
+
+
+@st.cache_data(show_spinner="Aggregating crashes by area...")
+def _crash_counts_by_area(city_key: str, path: str, geo_json_str: str,
+                          id_field: str, name_field: str,
+                          lat_bounds: tuple, lon_bounds: tuple):
+    coords = _load_crash_coords(city_key, path, lat_bounds, lon_bounds)
+    if coords.empty:
+        return coords, pd.DataFrame()
+    gdf_ca = _load_geo_gdf_crash(city_key, geo_json_str, id_field)
+    crash_pts = gpd.GeoDataFrame(
+        coords,
+        geometry=gpd.points_from_xy(coords["LONGITUDE"], coords["LATITUDE"]),
+        crs="EPSG:4326",
+    )
+    keep_cols = [c for c in [id_field, name_field, "geometry"] if c in gdf_ca.columns]
+    joined = gpd.sjoin(crash_pts, gdf_ca[keep_cols], how="inner", predicate="within")
+    grp_cols = [id_field]
+    if name_field in joined.columns and name_field != id_field:
+        grp_cols.append(name_field)
+    crash_counts = joined.groupby(grp_cols).size().reset_index(name="Crash Count")
+    crash_counts[id_field] = crash_counts[id_field].astype(str)
+    return coords, crash_counts
+
+
 def render(city: CityConfig, geo: dict | None = None):
     st.header(f"Crash Analysis — {city.name}")
     st.markdown(f"Traffic crash patterns across {city.name}.")
@@ -173,35 +212,13 @@ def render(city: CityConfig, geo: dict | None = None):
     st.subheader("Crash Location Density")
     if geo is not None:
         try:
-            raw = pd.read_csv(path, usecols=["LATITUDE", "LONGITUDE"], low_memory=False)
-            raw["LATITUDE"] = pd.to_numeric(raw["LATITUDE"], errors="coerce")
-            raw["LONGITUDE"] = pd.to_numeric(raw["LONGITUDE"], errors="coerce")
-            coords = raw.dropna(subset=["LATITUDE", "LONGITUDE"])
-            lat_lo, lat_hi = city.lat_bounds
-            lon_lo, lon_hi = city.lon_bounds
-            coords = coords[
-                (coords["LATITUDE"] > lat_lo) & (coords["LATITUDE"] < lat_hi) &
-                (coords["LONGITUDE"] > lon_lo) & (coords["LONGITUDE"] < lon_hi)
-            ]
+            coords, crash_counts = _crash_counts_by_area(
+                city.key, path, json.dumps(geo),
+                city.boundary_id_field, city.boundary_name_field,
+                city.lat_bounds, city.lon_bounds,
+            )
 
-            if not coords.empty:
-                gdf_ca = _load_geo_gdf_crash(city.key, json.dumps(geo), city.boundary_id_field)
-                crash_pts = gpd.GeoDataFrame(
-                    coords,
-                    geometry=gpd.points_from_xy(coords["LONGITUDE"], coords["LATITUDE"]),
-                    crs="EPSG:4326",
-                )
-                keep_cols = [c for c in [city.boundary_id_field, city.boundary_name_field, "geometry"]
-                             if c in gdf_ca.columns]
-                joined = gpd.sjoin(crash_pts, gdf_ca[keep_cols],
-                                   how="inner", predicate="within")
-
-                grp_cols = [city.boundary_id_field]
-                if city.boundary_name_field in joined.columns and city.boundary_name_field != city.boundary_id_field:
-                    grp_cols.append(city.boundary_name_field)
-                crash_counts = joined.groupby(grp_cols).size().reset_index(name="Crash Count")
-                crash_counts[city.boundary_id_field] = crash_counts[city.boundary_id_field].astype(str)
-
+            if not coords.empty and not crash_counts.empty:
                 fig_density = px.choropleth_map(
                     crash_counts, geojson=geo,
                     locations=city.boundary_id_field,

@@ -13,7 +13,6 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, r2_score
 import plotly.express as px
 import geopandas as gpd
-import file_loader
 import ml_predictor
 import map_utils
 from city_config import CityConfig
@@ -26,6 +25,40 @@ def _train_crime_model(X_json: str, y_json: str):
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X, y)
     return model
+
+
+@st.cache_data(show_spinner="Forecasting crime trend...")
+def _train_area_forecast(city_key: str, area: str, crime: str,
+                         X_bytes: bytes, y_bytes: bytes,
+                         x_shape: tuple, x_last_bytes: bytes):
+    X = np.frombuffer(X_bytes, dtype=np.float64).reshape(x_shape).copy()
+    y = np.frombuffer(y_bytes, dtype=np.float64).copy()
+    x_last = np.frombuffer(x_last_bytes, dtype=np.float64).reshape(1, -1).copy()
+
+    n_splits = min(5, max(2, len(X) // 6))
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    candidates = {
+        "Ridge Regression": lambda: make_pipeline(StandardScaler(), Ridge(alpha=1.0)),
+        "Random Forest":    lambda: RandomForestRegressor(n_estimators=100, random_state=42),
+    }
+
+    best_name, best_r2, best_rmse = None, -np.inf, np.inf
+    for name, make_model in candidates.items():
+        r2s, rmses = [], []
+        for tr, te in tscv.split(X):
+            m = make_model()
+            m.fit(X[tr], y[tr])
+            p = m.predict(X[te])
+            r2s.append(r2_score(y[te], p))
+            rmses.append(np.sqrt(mean_squared_error(y[te], p)))
+        avg = float(np.mean(r2s))
+        if avg > best_r2:
+            best_name, best_r2, best_rmse = name, avg, float(np.mean(rmses))
+
+    final = candidates[best_name]()
+    final.fit(X, y)
+    prediction = float(max(0, final.predict(x_last)[0]))
+    return best_name, best_r2, best_rmse, prediction, n_splits
 
 
 @st.cache_data
@@ -128,33 +161,14 @@ def render(city: CityConfig, geo: dict, area_map: dict):
     model_data = area_data.dropna(subset=feature_cols + [selected_crime])
 
     if len(model_data) >= 10:
-        X = model_data[feature_cols].values
-        y = model_data[selected_crime].values
+        X = np.ascontiguousarray(model_data[feature_cols].values, dtype=np.float64)
+        y = np.ascontiguousarray(model_data[selected_crime].values, dtype=np.float64)
+        x_last = np.ascontiguousarray(X[-1].reshape(1, -1), dtype=np.float64)
 
-        n_splits = min(5, max(2, len(X) // 6))
-        tscv = TimeSeriesSplit(n_splits=n_splits)
-        candidates = {
-            "Ridge Regression": lambda: make_pipeline(StandardScaler(), Ridge(alpha=1.0)),
-            "Random Forest":    lambda: RandomForestRegressor(n_estimators=100, random_state=42),
-        }
-
-        best_name, best_r2, best_rmse = None, -np.inf, np.inf
-        for name, make_model in candidates.items():
-            r2s, rmses = [], []
-            for tr, te in tscv.split(X):
-                m = make_model()
-                m.fit(X[tr], y[tr])
-                p = m.predict(X[te])
-                r2s.append(r2_score(y[te], p))
-                rmses.append(np.sqrt(mean_squared_error(y[te], p)))
-            avg = float(np.mean(r2s))
-            if avg > best_r2:
-                best_name, best_r2, best_rmse = name, avg, float(np.mean(rmses))
-
-        r2, rmse = best_r2, best_rmse
-        model = candidates[best_name]()
-        model.fit(X, y)
-        prediction = max(0, model.predict(X[-1].reshape(1, -1))[0])
+        best_name, r2, rmse, prediction, n_splits = _train_area_forecast(
+            city.key, selected_area, selected_crime,
+            X.tobytes(), y.tobytes(), X.shape, x_last.tobytes(),
+        )
 
         _today = datetime.now()
         _nm = _today.replace(month=_today.month % 12 + 1,

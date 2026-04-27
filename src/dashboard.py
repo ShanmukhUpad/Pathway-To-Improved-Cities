@@ -19,40 +19,18 @@ st.set_page_config(
 
 map_utils.init_mapbox()
 
-# ── Auto-refresh on startup (once per session) ────────────────────────────────
-if not st.session_state.get("_refresh_kicked_off"):
-    st.session_state["_refresh_kicked_off"] = True
-    data_fetcher.start_background_refresh()
-
 
 @st.cache_resource
 def _get_scheduler():
     return data_fetcher.start_scheduler()
 
-    # Remove previously loaded city modules
-    for name in _CITY_MODULES:
-        sys.modules.pop(name, None)
 
-    # Ensure only the current city's dir is prepended to sys.path
-    for c in CITIES.values():
-        d = os.path.join(SRC_DIR, c)
-        while d in sys.path:
-            sys.path.remove(d)
-    sys.path.insert(0, city_dir)
+# ── Auto-refresh on startup (once per session) ────────────────────────────────
+if not st.session_state.get("_refresh_kicked_off"):
+    st.session_state["_refresh_kicked_off"] = True
+    data_fetcher.start_background_refresh()
+    _get_scheduler()
 
-    # Load in dependency order: data_fetcher before the render modules
-    for name in _CITY_MODULES:
-        fp = os.path.join(city_dir, f"{name}.py")
-        if not os.path.exists(fp):
-            continue
-        spec = importlib.util.spec_from_file_location(name, fp)
-        mod  = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod          # pre-register so intra-city imports resolve
-        spec.loader.exec_module(mod)
-        mod._CITY_KEY = city_key         # tag for cache-hit detection
-
-
-# ── City selector ─────────────────────────────────────────────────────────────
 
 st.title("Pathway to Improved Cities Dashboard")
 
@@ -134,11 +112,12 @@ with st.sidebar:
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
 
-tab_safety, tab_transport, tab_infra, tab_socio = st.tabs([
+tab_safety, tab_transport, tab_infra, tab_socio, tab_upload = st.tabs([
     "Public Safety",
     "Transportation",
     "Infrastructure",
     "Socioeconomics & Diversity",
+    "Data Upload",
 ])
 
 with tab_safety:

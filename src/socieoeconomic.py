@@ -1,5 +1,4 @@
 import geopandas as gpd
-import file_loader
 import pandas as pd
 import json
 import os
