@@ -155,6 +155,10 @@ CITIES: dict[str, CityConfig] = {
         lat_bounds=(33.7, 34.35),
         lon_bounds=(-118.7, -118.1),
         boundary_path="lapd_divisions.geojson",
+        boundary_url=(
+            "https://services5.arcgis.com/7nsPwEMP38bSkCjy/arcgis/rest/services/"
+            "LAPD_Division/FeatureServer/0/query?where=1=1&outFields=*&f=geojson"
+        ),
         boundary_id_field="APREC",
         boundary_name_field="APREC",
         crime_area_col="Community Area",
@@ -200,11 +204,15 @@ CITIES: dict[str, CityConfig] = {
         lat_bounds=(39.85, 40.15),
         lon_bounds=(-75.3, -74.95),
         boundary_path="police_districts.geojson",
-        boundary_id_field="dist_num",
-        boundary_name_field="dist_num",
+        boundary_url=(
+            "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/"
+            "Boundaries_District/FeatureServer/0/query?where=1=1&outFields=*&f=geojson"
+        ),
+        boundary_id_field="dist_numc",
+        boundary_name_field="dist_numc",
         crime_area_col="Community Area",
         census_id_col="GEOID",
-        area_id_kind="int",
+        area_id_kind="str",
         area_display_prefix="District ",
         soda_portal="https://phl.carto.com/api/v2/sql",
         token_env="PHL_DATA_PORTAL_TOKEN",

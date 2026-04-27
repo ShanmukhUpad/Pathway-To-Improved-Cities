@@ -111,6 +111,22 @@ exit(1 if failed or ok == 0 else 0)
             }
         }
 
+        stage('Deploy') {
+            steps {
+                sh '''
+                    set -e
+                    docker rm -f pic-prod 2>/dev/null || true
+                    docker run -d \
+                      --name pic-prod \
+                      --restart unless-stopped \
+                      -p 8501:8501 \
+                      ${IMAGE_NAME}:${IMAGE_TAG}
+                    echo "[deploy] pic-prod running at :8501 (image ${IMAGE_NAME}:${IMAGE_TAG})"
+                    docker ps --filter name=pic-prod --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+                '''
+            }
+        }
+
         stage('Push') {
             when { expression { return env.REGISTRY?.trim() } }
             steps {
