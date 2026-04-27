@@ -41,7 +41,7 @@ pipeline {
             steps {
                 sh '''
                     docker run --rm \
-                      -v "$PWD":/workspace -w /workspace \
+                      -w /app \
                       ${IMAGE_NAME}:${IMAGE_TAG} \
                       python -m compileall -q src
                 '''
@@ -58,16 +58,28 @@ pipeline {
 import warnings; warnings.filterwarnings('ignore')
 from city_config import CITIES, get_city, load_boundary
 failed = 0
+skipped = 0
+ok = 0
 for key in CITIES:
     city = get_city(key)
+    has_remote = bool(city.boundary_url)
     try:
         geo, am = load_boundary(city)
         assert len(am) > 0, 'empty area_map'
         print(f'[ok] {key}: {len(am)} areas')
+        ok += 1
+    except FileNotFoundError as e:
+        if not has_remote:
+            print(f'[skip] {key}: no geometry wired (expected)')
+            skipped += 1
+        else:
+            print(f'[FAIL] {key}: {e}')
+            failed += 1
     except Exception as e:
         print(f'[FAIL] {key}: {e}')
         failed += 1
-exit(1 if failed else 0)
+print(f'[summary] ok={ok} skipped={skipped} failed={failed}')
+exit(1 if failed or ok == 0 else 0)
 "
                 '''
             }
