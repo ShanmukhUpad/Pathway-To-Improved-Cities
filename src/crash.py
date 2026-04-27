@@ -7,9 +7,21 @@ import geopandas as gpd
 import os
 import ml_predictor
 import map_utils
+import joblib
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import (
+    accuracy_score,
+    precision_recall_fscore_support,
+    roc_auc_score,
+    roc_curve,
+    confusion_matrix,
+)
+#Fixing SSL certificate issues
+import ssl
+import urllib.request
+
 
 _SRC = os.path.dirname(os.path.abspath(__file__))
-# Prefer the auto-fetched file; fall back to the bundled snapshot
 CRASH_CSV_LATEST = os.path.join(_SRC, "traffic_crashes_latest.csv")
 CRASH_CSV_LEGACY = os.path.join(_SRC, "Traffic_Crashes_-_Crashes_20260309.csv")
 
@@ -22,14 +34,31 @@ def _resolve_crash_csv() -> str | None:
         return CRASH_CSV_LEGACY
     return None
 
+
 DAY_LABELS = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
 MONTH_LABELS = {
     1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
     7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"
 }
 
+# ── Model file paths (must be in the same src/ directory as this file) ─────────
+MODEL_FILES = {
+    "accident":    os.path.join(_SRC, "accident_occurrence_model.joblib"),
+    "hit_and_run": os.path.join(_SRC, "gbc_hit_and_run_model.joblib"),
+    "forecast":    os.path.join(_SRC, "crash_forecast_model.joblib"),
+}
+
+# ── Known features per model (read from feature_names_in_ at load time) ────────
+ACC_FEATURES = ['POSTED_SPEED_LIMIT', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
+                'TRAFFICWAY_TYPE', 'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'CRASH_MONTH']
+
+HR_FEATURES  = ['POSTED_SPEED_LIMIT', 'WEATHER_CONDITION', 'LIGHTING_CONDITION',
+                'TRAFFICWAY_TYPE', 'CRASH_HOUR', 'CRASH_DAY_OF_WEEK', 'CRASH_MONTH',
+                'IS_WEEKEND', 'IS_RUSH_HOUR']
+
+
 # ──────────────────────────────────────────────
-# Data loading & cleaning  (notebook-faithful)
+# Data loading & cleaning
 # ──────────────────────────────────────────────
 
 # ──────────────────────────────────────────────
@@ -112,6 +141,148 @@ def load_crash_data():
     return _clean_crash_df(df)
 
 
+# ──────────────────────────────────────────────
+# Model helpers
+# ──────────────────────────────────────────────
+
+@st.cache_resource
+def load_models():
+    """Load both pre-trained models from disk. Cached so disk is only hit once."""
+    models = {}
+    for key, path in MODEL_FILES.items():
+        if os.path.exists(path):
+            try:
+                models[key] = joblib.load(path)
+            except Exception as exc:
+                st.warning(f"Could not load {os.path.basename(path)}: {exc}")
+                models[key] = None
+        else:
+            models[key] = None
+    return models
+
+
+def _prepare_X(raw_df: pd.DataFrame, features: list) -> pd.DataFrame:
+    """
+    Given a dataframe and a list of feature names, return a numeric-only
+    DataFrame ready for model.predict().
+
+    - Engineers IS_WEEKEND and IS_RUSH_HOUR if needed.
+    - Label-encodes any remaining string columns using the data itself
+      (consistent with how both models were originally trained).
+    - Fills NaNs with -1.
+    """
+    df = raw_df.copy()
+
+    # Time-derived features
+    if 'CRASH_DATE' in df.columns and 'CRASH_HOUR' not in df.columns:
+        df['CRASH_DATE']        = pd.to_datetime(df['CRASH_DATE'])
+        df['CRASH_HOUR']        = df['CRASH_DATE'].dt.hour
+        df['CRASH_DAY_OF_WEEK'] = df['CRASH_DATE'].dt.dayofweek
+        df['CRASH_MONTH']       = df['CRASH_DATE'].dt.month
+
+    if 'IS_WEEKEND' in features:
+        df['IS_WEEKEND'] = df['CRASH_DAY_OF_WEEK'].isin([5, 6]).astype(int)
+    if 'IS_RUSH_HOUR' in features:
+        df['IS_RUSH_HOUR'] = (
+            df['CRASH_HOUR'].between(6, 9) | df['CRASH_HOUR'].between(15, 19)
+        ).astype(int)
+
+    Xf = df[features].copy()
+
+    # Label-encode any string columns (same strategy used during training)
+    for col in Xf.select_dtypes(include=['object']).columns:
+        le = LabelEncoder()
+        Xf[col] = le.fit_transform(Xf[col].astype(str))
+
+    for col in Xf.columns:
+        Xf[col] = pd.to_numeric(Xf[col], errors='coerce')
+    Xf.fillna(-1, inplace=True)
+
+    return Xf
+
+
+def _render_model_metrics(model, X_eval: pd.DataFrame, y_true: pd.Series,
+                           title: str, class_labels: list):
+    """Render accuracy / precision / recall / F1, confusion matrix, ROC, and
+    feature importances for a binary classifier."""
+    st.markdown(f"#### {title}")
+
+    try:
+        y_pred = model.predict(X_eval)
+    except Exception as exc:
+        st.warning(f"Prediction failed: {exc}")
+        return
+
+    acc  = accuracy_score(y_true, y_pred)
+    prec, recall, f1, _ = precision_recall_fscore_support(
+        y_true, y_pred, average='binary', zero_division=0
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Accuracy",  f"{acc:.1%}")
+    c2.metric("Precision", f"{prec:.1%}")
+    c3.metric("Recall",    f"{recall:.1%}")
+    c4.metric("F1 Score",  f"{f1:.3f}")
+
+    col_cm, col_roc = st.columns(2)
+
+    # Confusion matrix
+    with col_cm:
+        cm = confusion_matrix(y_true, y_pred)
+        fig_cm = px.imshow(
+            cm,
+            x=class_labels, y=class_labels,
+            color_continuous_scale='OrRd',
+            text_auto=True,
+            labels=dict(x='Predicted', y='Actual'),
+            title='Confusion Matrix',
+        )
+        fig_cm.update_layout(coloraxis_showscale=False)
+        st.plotly_chart(fig_cm, use_container_width=True)
+
+    # ROC curve
+    with col_roc:
+        if hasattr(model, 'predict_proba'):
+            try:
+                proba = model.predict_proba(X_eval)[:, 1]
+                auc   = roc_auc_score(y_true, proba)
+                fpr, tpr, _ = roc_curve(y_true, proba)
+                fig_roc = go.Figure()
+                fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines',
+                                             name=f'ROC (AUC={auc:.3f})'))
+                fig_roc.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines',
+                                             name='Random', line=dict(dash='dash')))
+                fig_roc.update_layout(
+                    title=f'ROC Curve (AUC = {auc:.3f})',
+                    xaxis_title='False Positive Rate',
+                    yaxis_title='True Positive Rate',
+                )
+                st.plotly_chart(fig_roc, use_container_width=True)
+            except Exception:
+                st.info("ROC curve unavailable.")
+
+    # Feature importances
+    if hasattr(model, 'feature_importances_'):
+        imp = pd.DataFrame({
+            'Feature':    X_eval.columns.tolist(),
+            'Importance': model.feature_importances_,
+        }).sort_values('Importance', ascending=False)
+        fig_imp = px.bar(
+            imp, x='Importance', y='Feature', orientation='h',
+            title='Feature Importances',
+            color='Importance', color_continuous_scale='Blues',
+        )
+        fig_imp.update_layout(
+            yaxis={'categoryorder': 'total ascending'},
+            coloraxis_showscale=False,
+        )
+        st.plotly_chart(fig_imp, use_container_width=True)
+
+
+# ──────────────────────────────────────────────
+# Main render function
+# ──────────────────────────────────────────────
+
 def render(chicago_geo=None):
     st.header("Transportation Dashboard")
     st.markdown(
@@ -181,10 +352,9 @@ def render(chicago_geo=None):
         fig_m.update_layout(coloraxis_showscale=False)
         st.plotly_chart(fig_m, width="stretch")
 
-    # ── Timing summary ───────────────────────────────────────────────────────
-    peak_hour = hourly.loc[hourly["Crashes"].idxmax(), "CRASH_HOUR"]
-    peak_day  = daily.loc[daily["Crashes"].idxmax(), "Day"]
-    peak_month= monthly.loc[monthly["Crashes"].idxmax(), "Month"]
+    peak_hour  = hourly.loc[hourly["Crashes"].idxmax(), "CRASH_HOUR"]
+    peak_day   = daily.loc[daily["Crashes"].idxmax(), "Day"]
+    peak_month = monthly.loc[monthly["Crashes"].idxmax(), "Month"]
     st.info(
         f"**When crashes happen most:** Peak hour is **{peak_hour}:00** "
         f"({'evening rush' if 15 <= peak_hour <= 19 else 'morning rush' if 6 <= peak_hour <= 9 else 'overnight' if peak_hour < 6 else 'midday'}), "
@@ -192,22 +362,25 @@ def render(chicago_geo=None):
         "Targeted enforcement and road safety campaigns during these windows could meaningfully reduce crash frequency."
     )
 
-    # ── Crash Density Heatmap ───────────────────────────────────────────────
+    # ── Crash Density Heatmap ────────────────────────────────────────────
     st.divider()
     st.subheader("Crash Location Density")
     path = _resolve_crash_csv()
     if path and chicago_geo:
         try:
             raw_coords = pd.read_csv(path, usecols=["LATITUDE", "LONGITUDE"], low_memory=False)
-            raw_coords["LATITUDE"] = pd.to_numeric(raw_coords["LATITUDE"], errors="coerce")
+            raw_coords["LATITUDE"]  = pd.to_numeric(raw_coords["LATITUDE"],  errors="coerce")
             raw_coords["LONGITUDE"] = pd.to_numeric(raw_coords["LONGITUDE"], errors="coerce")
             coords = raw_coords.dropna(subset=["LATITUDE", "LONGITUDE"])
             coords = coords[(coords["LATITUDE"] > 41.6) & (coords["LATITUDE"] < 42.1)]
 
             if not coords.empty:
-                # Spatial join to count crashes per community area
                 geo_url = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
-                gdf_ca = gpd.read_file(geo_url)
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(geo_url, context=ctx) as response:
+                    gdf_ca = gpd.read_file(response)
                 gdf_ca["area_num_1"] = gdf_ca["area_num_1"].astype(int)
 
                 crash_pts = gpd.GeoDataFrame(
@@ -268,12 +441,12 @@ def render(chicago_geo=None):
     st.subheader("Road & Environment Conditions")
 
     condition_options = {
-        'Weather Condition':        'WEATHER_CONDITION',
-        'Lighting Condition':       'LIGHTING_CONDITION',
-        'Roadway Surface Condition':'ROADWAY_SURFACE_COND',
-        'Road Defect':              'ROAD_DEFECT',
-        'Traffic Control Device':   'TRAFFIC_CONTROL_DEVICE',
-        'Alignment':                'ALIGNMENT',
+        'Weather Condition':         'WEATHER_CONDITION',
+        'Lighting Condition':        'LIGHTING_CONDITION',
+        'Roadway Surface Condition': 'ROADWAY_SURFACE_COND',
+        'Road Defect':               'ROAD_DEFECT',
+        'Traffic Control Device':    'TRAFFIC_CONTROL_DEVICE',
+        'Alignment':                 'ALIGNMENT',
     }
     selected_condition = st.selectbox(
         "Breakdown by condition",
@@ -309,7 +482,7 @@ def render(chicago_geo=None):
 
     st.divider()
 
-    # ── Section 3: Crash type breakdown ─────────────────────────────────
+    # ── Section 3: Crash type breakdown ──────────────────────────────────
     st.subheader("Crash Type Breakdown")
     col_ct, col_tw = st.columns(2)
 
@@ -321,10 +494,7 @@ def render(chicago_geo=None):
             title='Top Crash Types',
             color='Count', color_continuous_scale='Oranges'
         )
-        fig_ct.update_layout(
-            yaxis={'categoryorder': 'total ascending'},
-            coloraxis_showscale=False
-        )
+        fig_ct.update_layout(yaxis={'categoryorder': 'total ascending'}, coloraxis_showscale=False)
         st.plotly_chart(fig_ct, width="stretch")
 
     with col_tw:
@@ -335,10 +505,7 @@ def render(chicago_geo=None):
             title='Crashes by Trafficway Type',
             color='Count', color_continuous_scale='Oranges'
         )
-        fig_tw.update_layout(
-            yaxis={'categoryorder': 'total ascending'},
-            coloraxis_showscale=False
-        )
+        fig_tw.update_layout(yaxis={'categoryorder': 'total ascending'}, coloraxis_showscale=False)
         st.plotly_chart(fig_tw, width="stretch")
 
     top_crash_type = ct_counts.iloc[0]["Crash Type"]
@@ -350,15 +517,14 @@ def render(chicago_geo=None):
 
     st.divider()
 
-    # ── Section 4: Damage severity ───────────────────────────────────────
+    # ── Section 4: Damage severity ────────────────────────────────────────
     st.subheader("Damage Severity")
     col_dmg, col_hr = st.columns(2)
 
     with col_dmg:
         damage_order = ['$500 OR LESS', '$501 - $1,500', 'OVER $1,500']
         dmg_counts = (
-            df2['DAMAGE']
-            .str.upper().str.strip()
+            df2['DAMAGE'].str.upper().str.strip()
             .value_counts()
             .reindex(damage_order, fill_value=0)
             .reset_index()
@@ -373,8 +539,7 @@ def render(chicago_geo=None):
 
     with col_hr:
         hr_counts = (
-            df2['HIT_AND_RUN_I']
-            .str.upper().str.strip()
+            df2['HIT_AND_RUN_I'].str.upper().str.strip()
             .map({'Y': 'Hit and Run', 'N': 'Not Hit and Run'})
             .value_counts()
             .reset_index()
@@ -399,7 +564,7 @@ def render(chicago_geo=None):
 
     st.divider()
 
-    # ── Section 5: Speed limit & lane count distributions ────────────────
+    # ── Section 5: Speed limit & lane count distributions ─────────────────
     st.subheader("Road Characteristics")
     col_sp, col_ln = st.columns(2)
 
@@ -427,14 +592,13 @@ def render(chicago_geo=None):
 
     st.divider()
 
-    # ── Section 6: Intersection vs. non-intersection ─────────────────────
+    # ── Section 6: Intersection vs. non-intersection ──────────────────────
     st.subheader("Intersection-Related Crashes")
     col_int, col_units = st.columns(2)
 
     with col_int:
         int_counts = (
-            df2['INTERSECTION_RELATED_I']
-            .str.upper().str.strip()
+            df2['INTERSECTION_RELATED_I'].str.upper().str.strip()
             .map({'Y': 'Intersection-Related', 'N': 'Not Intersection-Related'})
             .value_counts()
             .reset_index()
@@ -458,7 +622,7 @@ def render(chicago_geo=None):
         fig_units.update_layout(coloraxis_showscale=False)
         st.plotly_chart(fig_units, width="stretch")
 
-    # ── Section 7: Scatterplots ────────────────────────────────────────────────
+    # ── Section 7: Scatterplots ────────────────────────────────────────────
     st.divider()
     st.subheader("Speed and Lane Analysis Scatterplots")
     scatter_sample = df1.sample(min(5000, len(df1)), random_state=42) if len(df1) > 5000 else df1
@@ -491,12 +655,12 @@ def render(chicago_geo=None):
         "Clusters at specific speed-hour combinations highlight when certain road types are most dangerous."
     )
 
-    # ── Section 8: Moran's I Spatial Autocorrelation ─────────────────────────
+    # ── Section 8: Moran's I Spatial Autocorrelation ──────────────────────
     st.divider()
     try:
         if path:
             raw_for_moran = pd.read_csv(path, usecols=["LATITUDE", "LONGITUDE"], low_memory=False)
-            raw_for_moran["LATITUDE"] = pd.to_numeric(raw_for_moran["LATITUDE"], errors="coerce")
+            raw_for_moran["LATITUDE"]  = pd.to_numeric(raw_for_moran["LATITUDE"],  errors="coerce")
             raw_for_moran["LONGITUDE"] = pd.to_numeric(raw_for_moran["LONGITUDE"], errors="coerce")
             raw_for_moran = raw_for_moran.dropna(subset=["LATITUDE", "LONGITUDE"])
             raw_for_moran = raw_for_moran[
@@ -505,7 +669,11 @@ def render(chicago_geo=None):
 
             if len(raw_for_moran) > 100:
                 geo_url = "https://raw.githubusercontent.com/RandomFractals/ChicagoCrimes/master/data/chicago-community-areas.geojson"
-                gdf_ca = gpd.read_file(geo_url)
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(geo_url, context=ctx) as response:
+                    gdf_ca = gpd.read_file(response)
                 gdf_ca["area_num_1"] = gdf_ca["area_num_1"].astype(int)
 
                 crash_points = gpd.GeoDataFrame(
@@ -519,7 +687,7 @@ def render(chicago_geo=None):
                     how="inner", predicate="within",
                 )
                 crash_by_ca = joined.groupby("area_num_1").size().reset_index(name="crash_count")
-                gdf_merged = gdf_ca.merge(crash_by_ca, on="area_num_1", how="inner")
+                gdf_merged  = gdf_ca.merge(crash_by_ca, on="area_num_1", how="inner")
                 gdf_merged["area_num_str"] = gdf_merged["area_num_1"].astype(str)
 
                 if len(gdf_merged) >= 10 and chicago_geo:
@@ -536,7 +704,7 @@ def render(chicago_geo=None):
     except Exception as exc:
         st.warning(f"Could not compute spatial autocorrelation: {exc}")
 
-    # ── Section 9: ML Predictions ────────────────────────────────────────────
+    # ── Section 9: ML Predictor (generic, uses df2) ───────────────────────
     st.divider()
     _CRASH_DEFAULT_FEATURES = [
         'WEATHER_CONDITION', 'LIGHTING_CONDITION', 'ROADWAY_SURFACE_COND',
@@ -550,3 +718,311 @@ def render(chicago_geo=None):
         default_target="DAMAGE",
         default_features=_CRASH_DEFAULT_FEATURES,
     )
+
+    # ── Section 10: Pre-trained models ────────────────────────────────────
+    st.divider()
+    st.subheader("Pre-trained Models")
+    st.markdown(
+        "The models below were trained on the full Chicago crash dataset. "
+        "The **accident occurrence model** (Random Forest) predicts whether a crash "
+        "is likely to occur given road conditions. The **hit-and-run model** (Gradient "
+        "Boosting) predicts whether a crash will be a hit-and-run."
+    )
+
+    models = load_models()
+    model_acc = models.get("accident")
+    model_hr  = models.get("hit_and_run")
+
+    # Show a status banner for each model
+    st.markdown("**Model status:**")
+    s1, s2 = st.columns(2)
+    s1.success("Accident occurrence model loaded" if model_acc else "accident_occurrence_model.joblib not found in src/")
+    s2.success("Hit-and-run model loaded"          if model_hr  else "gbc_hit_and_run_model.joblib not found in src/")
+
+    tab_eval, tab_predict = st.tabs(["Model Evaluation", "Make a Prediction"])
+
+    # ── Section 11: 30-Day Crash Forecast ─────────────────────────────────
+    st.divider()
+    st.subheader("📅 30-Day Crash Forecast")
+    st.markdown(
+        "Using a Random Forest model trained on historical daily crash counts, "
+        "this section forecasts the expected number of crashes per day over the "
+        "next 30 days. Predictions roll forward using lag and rolling-mean features."
+    )
+
+    forecast_model_path = os.path.join(_SRC, "daily_crash_forecasting_model.joblib")
+
+    if not os.path.exists(forecast_model_path):
+        st.info("Place `daily_crash_forecasting_model.joblib` in the `src/` folder to enable forecasting.")
+    else:
+        try:
+            forecast_model = joblib.load(forecast_model_path)
+
+            # ── Build daily crash count time series from raw CSV ───────────
+            path = _resolve_crash_csv()
+            raw = pd.read_csv(path, usecols=['CRASH_DATE'], low_memory=False)
+            raw['CRASH_DATE'] = pd.to_datetime(raw['CRASH_DATE'])
+            raw['DATE'] = raw['CRASH_DATE'].dt.normalize()
+
+            daily = (
+                raw.groupby('DATE').size()
+                .rename('crash_count')
+                .sort_index()
+            )
+
+            # Fill any missing dates with 0 so lags are always defined
+            full_idx = pd.date_range(daily.index.min(), daily.index.max(), freq='D')
+            daily = daily.reindex(full_idx, fill_value=0)
+
+            # ── Roll forward 30 days from the last known date ──────────────
+            last_date     = daily.index[-1]
+            history       = daily.copy()
+            forecast_dates  = []
+            forecast_values = []
+
+            for i in range(1, 31):
+                next_date = last_date + pd.Timedelta(days=i)
+
+                lag_1         = history.iloc[-1]
+                lag_7         = history.iloc[-7]  if len(history) >= 7  else history.mean()
+                rolling_mean_7 = history.iloc[-7:].mean()
+                rolling_std_7 = history.iloc[-7:].std() if len(history) >= 7 else 0.0
+
+                row = pd.DataFrame([{
+                    'day_of_week':    next_date.dayofweek,
+                    'month':          next_date.month,
+                    'lag_1':          lag_1,
+                    'lag_7':          lag_7,
+                    'rolling_mean_7': rolling_mean_7,
+                    'rolling_std_7':  rolling_std_7,
+                }])
+
+                pred = max(0, round(forecast_model.predict(row)[0]))
+
+                # Append predicted value so next iteration can use it as a lag
+                history = pd.concat([
+                    history,
+                    pd.Series([pred], index=[next_date])
+                ])
+
+                forecast_dates.append(next_date)
+                forecast_values.append(pred)
+
+            forecast_df = pd.DataFrame({
+                'Date':            forecast_dates,
+                'Predicted Crashes': forecast_values,
+            })
+
+            # ── Summary metrics ────────────────────────────────────────────
+            total_pred    = int(forecast_df['Predicted Crashes'].sum())
+            avg_pred      = forecast_df['Predicted Crashes'].mean()
+            peak_day      = forecast_df.loc[forecast_df['Predicted Crashes'].idxmax()]
+            recent_avg    = daily.iloc[-30:].mean()
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Predicted (30 days)", f"{total_pred:,}")
+            m2.metric("Daily Average",             f"{avg_pred:.1f}")
+            m3.metric("Peak Day",                  peak_day['Date'].strftime("%b %d"))
+            m4.metric("Peak Day Crashes",          int(peak_day['Predicted Crashes']))
+
+            # ── Forecast chart (with recent history for context) ───────────
+            history_window = daily.iloc[-60:].reset_index()
+            history_window.columns = ['Date', 'Crashes']
+
+            fig_forecast = go.Figure()
+
+            fig_forecast.add_trace(go.Scatter(
+                x=history_window['Date'],
+                y=history_window['Crashes'],
+                mode='lines',
+                name='Historical (last 60 days)',
+                line=dict(color='#fdae6b', width=2),
+            ))
+
+            fig_forecast.add_trace(go.Scatter(
+                x=forecast_df['Date'],
+                y=forecast_df['Predicted Crashes'],
+                mode='lines+markers',
+                name='Forecast (next 30 days)',
+                line=dict(color='#e6550d', width=2, dash='dash'),
+                marker=dict(size=5),
+            ))
+
+            # Vertical line at the forecast boundary
+            fig_forecast.add_vline(
+                x=last_date.timestamp() * 1000,
+                line_dash='dot',
+                line_color='gray',
+                annotation_text='Forecast start',
+                annotation_position='top left',
+            )
+
+            fig_forecast.update_layout(
+                title='Daily Crash Count — Historical vs Forecast',
+                xaxis_title='Date',
+                yaxis_title='Number of Crashes',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+                hovermode='x unified',
+            )
+            st.plotly_chart(fig_forecast, use_container_width=True)
+
+            # ── Day-by-day forecast table ──────────────────────────────────
+            with st.expander("View full day-by-day forecast"):
+                forecast_display = forecast_df.copy()
+                forecast_display['Date'] = forecast_display['Date'].dt.strftime('%A, %b %d %Y')
+                forecast_display['vs Recent Avg'] = forecast_display['Predicted Crashes'].apply(
+                    lambda x: f"+{x - recent_avg:.1f}" if x >= recent_avg else f"{x - recent_avg:.1f}"
+                )
+                st.dataframe(forecast_display, use_container_width=True, hide_index=True)
+
+            st.info(
+                f"Over the next 30 days, the model forecasts **{total_pred:,} total crashes** "
+                f"(avg **{avg_pred:.1f}/day**). "
+                f"The busiest predicted day is **{peak_day['Date'].strftime('%A, %B %d')}** "
+                f"with **{int(peak_day['Predicted Crashes'])} crashes**. "
+                f"Recent 30-day historical average was **{recent_avg:.1f} crashes/day**."
+            )
+
+        except Exception as exc:
+            st.warning(f"Forecasting failed: {exc}")
+
+    # ── Tab 1: Evaluation on live data ────────────────────────────────────
+    with tab_eval:
+        st.markdown(
+            "Evaluate both models against the currently loaded crash dataset. "
+            "Metrics are computed on the full cleaned dataset (not a held-out split)."
+        )
+
+        # ── Accident occurrence model evaluation ──────────────────────────
+        if model_acc is not None:
+            st.markdown("---")
+            try:
+                # The accident model predicts whether a crash occurred (binary).
+                # We proxy 'occurrence' using NUM_UNITS > 0 as the positive label,
+                # but since all rows in df2 ARE crashes, we evaluate using CRASH_TYPE
+                # (INJURY/TOW = 1, NO INJURY/DRIVE AWAY = 0) as a meaningful proxy target.
+                acc_proxy = df2['CRASH_TYPE'].str.upper().str.strip()
+                y_acc = (acc_proxy != 'NO INJURY / DRIVE AWAY').astype(int)
+
+                X_acc = _prepare_X(df2, ACC_FEATURES)
+                valid = y_acc.notna()
+                X_acc = X_acc[valid].reset_index(drop=True)
+                y_acc = y_acc[valid].reset_index(drop=True)
+
+                _render_model_metrics(
+                    model_acc, X_acc, y_acc,
+                    title="Accident Occurrence Model (Random Forest)",
+                    class_labels=["No Injury/Drive Away", "Injury or Tow"]
+                )
+            except Exception as exc:
+                st.warning(f"Could not evaluate accident model: {exc}")
+        else:
+            st.info("Place `accident_occurrence_model.joblib` in the `src/` folder to enable evaluation.")
+
+        # ── Hit-and-run model evaluation ──────────────────────────────────
+        if model_hr is not None:
+            st.markdown("---")
+            try:
+                y_hr  = df2['HIT_AND_RUN_I'].str.upper().str.strip().map({'Y': 1, 'N': 0})
+                X_hr  = _prepare_X(df2, HR_FEATURES)
+                valid = y_hr.notna()
+                X_hr  = X_hr[valid].reset_index(drop=True)
+                y_hr  = y_hr[valid].reset_index(drop=True)
+
+                _render_model_metrics(
+                    model_hr, X_hr, y_hr,
+                    title="Hit-and-Run Model (Gradient Boosting)",
+                    class_labels=["Not Hit-and-Run", "Hit-and-Run"]
+                )
+            except Exception as exc:
+                st.warning(f"Could not evaluate hit-and-run model: {exc}")
+        else:
+            st.info("Place `gbc_hit_and_run_model.joblib` in the `src/` folder to enable evaluation.")
+
+    # ── Tab 2: Single-record prediction ───────────────────────────────────
+    with tab_predict:
+        st.markdown("Fill in road conditions to get a prediction from each model.")
+
+        # Shared inputs (used by both models)
+        st.markdown("#### Conditions")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            weather   = st.selectbox("Weather",           sorted(df2['WEATHER_CONDITION'].unique()),  key="pm_weather")
+            lighting  = st.selectbox("Lighting",          sorted(df2['LIGHTING_CONDITION'].unique()), key="pm_lighting")
+        with c2:
+            trafficway = st.selectbox("Trafficway Type",  sorted(df2['TRAFFICWAY_TYPE'].unique()),    key="pm_trafficway")
+            speed      = st.slider("Posted Speed Limit (mph)", 5, 100, 30, step=5,                   key="pm_speed")
+        with c3:
+            hour  = st.slider("Crash Hour",      0, 23, 12,  key="pm_hour")
+            dow   = st.selectbox("Day of Week",  list(DAY_LABELS.items()),
+                                 format_func=lambda x: x[1], key="pm_dow")
+            month = st.selectbox("Month",        list(MONTH_LABELS.items()),
+                                 format_func=lambda x: x[1], key="pm_month")
+
+        is_weekend   = int(dow[0] in [5, 6])
+        is_rush_hour = int(6 <= hour <= 9 or 15 <= hour <= 19)
+
+        if st.button("Run Predictions", type="primary"):
+            base_row = {
+                'POSTED_SPEED_LIMIT': speed,
+                'WEATHER_CONDITION':  weather,
+                'LIGHTING_CONDITION': lighting,
+                'TRAFFICWAY_TYPE':    trafficway,
+                'CRASH_HOUR':         hour,
+                'CRASH_DAY_OF_WEEK':  dow[0],
+                'CRASH_MONTH':        month[0],
+                'IS_WEEKEND':         is_weekend,
+                'IS_RUSH_HOUR':       is_rush_hour,
+            }
+
+            pred_col1, pred_col2 = st.columns(2)
+
+            # Accident occurrence prediction
+            with pred_col1:
+                if model_acc is not None:
+                    try:
+                        X_single_acc = _prepare_X(pd.DataFrame([base_row]), ACC_FEATURES)
+                        pred_acc     = model_acc.predict(X_single_acc)[0]
+                        label_acc    = "🚨 Likely Injury / Tow" if pred_acc == 1 else "✅ Likely No Injury / Drive Away"
+                        st.metric("Accident Occurrence Model", label_acc)
+                        if hasattr(model_acc, 'predict_proba'):
+                            proba_acc = model_acc.predict_proba(X_single_acc)[0]
+                            fig_p = px.bar(
+                                x=["No Injury/Drive Away", "Injury or Tow"],
+                                y=proba_acc,
+                                labels={'x': 'Outcome', 'y': 'Probability'},
+                                title='Prediction Probabilities',
+                                color=proba_acc,
+                                color_continuous_scale='Oranges',
+                            )
+                            fig_p.update_layout(coloraxis_showscale=False, showlegend=False)
+                            st.plotly_chart(fig_p, use_container_width=True)
+                    except Exception as exc:
+                        st.error(f"Accident model prediction failed: {exc}")
+                else:
+                    st.info("Accident model not loaded.")
+
+            # Hit-and-run prediction
+            with pred_col2:
+                if model_hr is not None:
+                    try:
+                        X_single_hr = _prepare_X(pd.DataFrame([base_row]), HR_FEATURES)
+                        pred_hr     = model_hr.predict(X_single_hr)[0]
+                        label_hr    = "⚠️ Likely Hit-and-Run" if pred_hr == 1 else "✅ Likely Not a Hit-and-Run"
+                        st.metric("Hit-and-Run Model", label_hr)
+                        if hasattr(model_hr, 'predict_proba'):
+                            proba_hr = model_hr.predict_proba(X_single_hr)[0]
+                            fig_q = px.bar(
+                                x=["Not Hit-and-Run", "Hit-and-Run"],
+                                y=proba_hr,
+                                labels={'x': 'Outcome', 'y': 'Probability'},
+                                title='Prediction Probabilities',
+                                color=proba_hr,
+                                color_continuous_scale='Reds',
+                            )
+                            fig_q.update_layout(coloraxis_showscale=False, showlegend=False)
+                            st.plotly_chart(fig_q, use_container_width=True)
+                    except Exception as exc:
+                        st.error(f"Hit-and-run model prediction failed: {exc}")
+                else:
+                    st.info("Hit-and-run model not loaded.")
