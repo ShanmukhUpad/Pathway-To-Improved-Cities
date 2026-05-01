@@ -444,5 +444,99 @@ def render():
             "The other charts above are unaffected."
         )
 
+st.markdown("---")
+st.subheader("Energy intensity heatmap — community area × building type")
+st.caption(
+    "Mean kWh per square foot by neighbourhood and building type. "
+    "Red = high intensity (less efficient), green = low intensity (more efficient). "
+    "Grey cells have no data for that combination."
+)
+
+df_heat = (
+    dff.dropna(subset=["COMMUNITY AREA NAME", "BUILDING TYPE", "KWH SQFT MEAN 2010"])
+    .groupby(["COMMUNITY AREA NAME", "BUILDING TYPE"])["KWH SQFT MEAN 2010"]
+    .mean()
+    .unstack("BUILDING TYPE")
+)
+
+# Sort rows by mean intensity descending so worst areas appear at top
+df_heat = df_heat.loc[df_heat.mean(axis=1).sort_values(ascending=False).index]
+
+if df_heat.empty:
+    no_data()
+else:
+    # Cap at 99th percentile to prevent outliers from washing out the colour scale
+    cap = dff["KWH SQFT MEAN 2010"].quantile(0.99)
+    df_heat_capped = df_heat.clip(upper=cap)
+
+    n_rows = len(df_heat)
+    fig_h  = max(8, n_rows * 0.28)
+
+    fig4, ax4 = plt.subplots(figsize=(9, fig_h))
+    fig4.patch.set_facecolor("#FAFAF8")
+
+    import matplotlib.colors as mcolors
+    cmap = plt.cm.RdYlGn_r   # green=low, red=high
+
+    im = ax4.imshow(
+        df_heat_capped.values,
+        aspect="auto",
+        cmap=cmap,
+        interpolation="nearest",
+    )
+
+    # Axes labels
+    ax4.set_xticks(range(len(df_heat_capped.columns)))
+    ax4.set_xticklabels(df_heat_capped.columns, fontsize=10, fontweight="medium")
+    ax4.set_yticks(range(n_rows))
+    ax4.set_yticklabels(df_heat_capped.index, fontsize=8)
+    ax4.tick_params(left=False, bottom=False)
+
+    # Annotate each cell with the actual value
+    for row_i in range(df_heat_capped.shape[0]):
+        for col_j in range(df_heat_capped.shape[1]):
+            raw_val = df_heat.iloc[row_i, col_j]
+            if pd.isna(raw_val):
+                ax4.text(col_j, row_i, "—", ha="center", va="center",
+                         fontsize=7, color="#aaa")
+            else:
+                # Pick text colour based on cell brightness
+                normed  = (df_heat_capped.iloc[row_i, col_j] - df_heat_capped.min().min()) \
+                          / (df_heat_capped.max().max() - df_heat_capped.min().min() + 1e-9)
+                txt_col = "white" if normed > 0.65 else "#1a1a18"
+                ax4.text(col_j, row_i, f"{raw_val:,.0f}",
+                         ha="center", va="center", fontsize=7, color=txt_col)
+
+    # Grey out NaN cells
+    nan_mask = df_heat.isna().values
+    nan_overlay = np.ma.masked_where(~nan_mask, np.ones_like(nan_mask, dtype=float))
+    ax4.imshow(nan_overlay, aspect="auto", cmap=plt.cm.Greys,
+               interpolation="nearest", alpha=0.35, vmin=0, vmax=1)
+
+    # Colorbar
+    cbar = fig4.colorbar(im, ax=ax4, fraction=0.02, pad=0.02)
+    cbar.set_label(f"Mean kWh/sqft  (capped at {cap:,.0f})", fontsize=9)
+    cbar.ax.tick_params(labelsize=8)
+
+    ax4.set_title("Energy intensity (kWh/sqft) — sorted by neighbourhood mean",
+                  fontsize=11, fontweight="medium", pad=10)
+
+    plt.tight_layout()
+    st.pyplot(fig4)
+    plt.close(fig4)
+
+    # Worst 5 combinations callout
+    st.markdown("**Top 5 highest intensity combinations**")
+    worst = (
+        df_heat.stack()
+        .reset_index()
+        .rename(columns={0: "kwh_sqft_mean"})
+        .sort_values("kwh_sqft_mean", ascending=False)
+        .head(5)
+        .reset_index(drop=True)
+    )
+    worst.index += 1
+    worst["kwh_sqft_mean"] = worst["kwh_sqft_mean"].map("{:,.1f}".format)
+    st.dataframe(worst, use_container_width=True)
     st.markdown("---")
     st.caption("Data: Chicago Energy Usage 2010 · EDA dashboard")
