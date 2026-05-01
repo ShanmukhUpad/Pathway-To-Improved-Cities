@@ -1,6 +1,3 @@
-import threading
-from concurrent.futures import ThreadPoolExecutor
-
 import streamlit as st
 
 import crash
@@ -44,26 +41,6 @@ st.title("Pathway to Improved Cities Dashboard")
 def _cached_boundary(city_key: str):
     return load_boundary(get_city(city_key))
 
-
-def _prefetch_all_boundaries():
-    """Warm boundary cache for every city in parallel (one-shot per session)."""
-    if st.session_state.get("_boundary_prefetch_done"):
-        return
-    st.session_state["_boundary_prefetch_done"] = True
-
-    def _warm(key):
-        try:
-            _cached_boundary(key)
-        except Exception:
-            pass
-
-    threading.Thread(
-        target=lambda: list(ThreadPoolExecutor(max_workers=len(CITIES)).map(_warm, CITIES.keys())),
-        daemon=True,
-    ).start()
-
-
-_prefetch_all_boundaries()
 
 # Top-of-page city dropdown
 city_keys = [k for k, _ in list_cities()]

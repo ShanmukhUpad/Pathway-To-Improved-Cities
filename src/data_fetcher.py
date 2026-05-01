@@ -269,6 +269,70 @@ def _fetch_crash_socrata(city: CityConfig, force: bool, *,
 # Per-city dispatch
 # ──────────────────────────────────────────────
 
+def _fetch_philly_crimes(city: CityConfig, force: bool) -> str:
+    """Fetch Philadelphia crime from OpenDataPhilly Carto SQL API."""
+    out = city.crime_path
+    if not force and not is_stale(out):
+        print(f"[{city.key}/crimes] up to date — {out}")
+        return out
+
+    print(f"[{city.key}/crimes] fetching from Carto...")
+    start_year = datetime.now().year - 2
+    url = "https://phl.carto.com/api/v2/sql"
+
+    frames = []
+    offset = 0
+    limit = 50_000
+    while True:
+        q = (
+            f"SELECT dc_dist, dispatch_date, text_general_code "
+            f"FROM incidents_part1_part2 "
+            f"WHERE dispatch_date >= '{start_year}-01-01' "
+            f"  AND dc_dist IS NOT NULL "
+            f"  AND text_general_code IS NOT NULL "
+            f"LIMIT {limit} OFFSET {offset}"
+        )
+        resp = requests.get(url, params={"q": q}, timeout=120)
+        resp.raise_for_status()
+        rows = resp.json().get("rows", [])
+        if not rows:
+            break
+        frames.append(pd.DataFrame(rows))
+        total = offset + len(rows)
+        print(f"  ... {total:,} rows ({city.key})")
+        if len(rows) < limit:
+            break
+        offset += limit
+        time.sleep(0.25)
+
+    if not frames:
+        print(f"[{city.key}/crimes] no rows")
+        return out
+
+    df = pd.concat(frames, ignore_index=True)
+    df["dispatch_date"] = pd.to_datetime(df["dispatch_date"], errors="coerce")
+    df.dropna(subset=["dc_dist", "dispatch_date", "text_general_code"], inplace=True)
+    # Zero-pad district to match boundary dist_numc (e.g. "5" → "05")
+    df["dc_dist"] = df["dc_dist"].astype(str).str.zfill(2)
+    df["Year"] = df["dispatch_date"].dt.year.astype(int)
+    df["Month"] = df["dispatch_date"].dt.month.astype(int)
+    df["text_general_code"] = df["text_general_code"].str.upper().str.strip()
+
+    counts = (df.groupby(["dc_dist", "Year", "Month", "text_general_code"])
+                .size().reset_index(name="count"))
+    pivot = counts.pivot_table(
+        index=["dc_dist", "Year", "Month"],
+        columns="text_general_code", values="count", fill_value=0,
+    ).reset_index()
+    pivot.columns.name = None
+    pivot.rename(columns={"dc_dist": city.crime_area_col}, inplace=True)
+
+    _ensure_dir(out)
+    pivot.to_csv(out, index=False)
+    print(f"[{city.key}/crimes] saved {len(pivot):,} rows → {out}")
+    return out
+
+
 _CRIME_FETCHERS = {
     "chicago": _fetch_chicago_crimes,
     "new_york":      lambda c, f: _fetch_crime_pivot_socrata(
@@ -280,6 +344,7 @@ _CRIME_FETCHERS = {
     "san_francisco": lambda c, f: _fetch_crime_pivot_socrata(
         c, f, area_field="analysis_neighborhood",
         date_field="incident_datetime", type_field="incident_category"),
+    "philadelphia":  _fetch_philly_crimes,
 }
 _CRASH_FETCHERS = {
     "chicago": _fetch_chicago_crashes,

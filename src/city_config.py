@@ -53,6 +53,8 @@ class CityConfig:
     crime_area_aliases: Tuple[Tuple[str, str], ...] = ()
     # Prefix prepended to area names in UI labels (e.g. "Precinct ").
     area_display_prefix: str = ""
+    # Zero-pad str IDs to this width (0 = no padding). E.g. 2 → "5" becomes "05".
+    area_id_zfill: int = 0
 
     # Data Portal (for refresh)
     soda_portal: Optional[str] = None
@@ -115,7 +117,10 @@ class CityConfig:
                 return None
         if kind == "upper_str":
             return str(v).strip().upper()
-        return str(v).strip()
+        s = str(v).strip()
+        if self.area_id_zfill > 0:
+            s = s.zfill(self.area_id_zfill)
+        return s
 
 
 # ──────────────────────────────────────────────
@@ -145,7 +150,7 @@ CITIES: dict[str, CityConfig] = {
         token_env="CHICAGO_DATA_PORTAL_TOKEN",
         has_transport_layer=True,
         has_energy_layer=True,
-        crash_csv_legacy="Traffic_Crashes_-_Crashes_20260309.csv",
+        crash_csv_legacy="",  # 608MB — fetched via API, never committed
         energy_csv="energy_usage_2010.csv",
         crimes_supplemental_csv="Crimes_2026.csv",
         fire_stations_csv="Fire_Stations.csv",
@@ -232,15 +237,13 @@ CITIES: dict[str, CityConfig] = {
         lat_bounds=(39.85, 40.15),
         lon_bounds=(-75.3, -74.95),
         boundary_path="police_districts.geojson",
-        boundary_url=(
-            "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/"
-            "Boundaries_District/FeatureServer/0/query?where=1=1&outFields=*&f=geojson"
-        ),
         boundary_id_field="dist_numc",
         boundary_name_field="dist_numc",
+        # crime CSV uses "Community Area" header but values = dc_dist (zero-padded)
         crime_area_col="Community Area",
         census_id_col="GEOID",
         area_id_kind="str",
+        area_id_zfill=2,           # "5" → "05" to match dist_numc in boundary
         area_display_prefix="District ",
         soda_portal="https://phl.carto.com/api/v2/sql",
         token_env="PHL_DATA_PORTAL_TOKEN",
@@ -262,10 +265,32 @@ def list_cities() -> list[tuple[str, str]]:
     return [(k, c.name) for k, c in CITIES.items()]
 
 
+def _simplify_geojson(geo: dict, precision: int = 4) -> dict:
+    """Round coordinates to `precision` decimal places.
+    Reduces payload size ~50-70% (4 dp ≈ 11m accuracy, fine for city choropleth).
+    """
+    import copy
+
+    def _round_coords(obj):
+        if isinstance(obj, float):
+            return round(obj, precision)
+        if isinstance(obj, list):
+            return [_round_coords(x) for x in obj]
+        return obj
+
+    geo = copy.deepcopy(geo)
+    for feat in geo.get("features", []):
+        geom = feat.get("geometry")
+        if geom and "coordinates" in geom:
+            geom["coordinates"] = _round_coords(geom["coordinates"])
+    return geo
+
+
 def load_boundary(city: CityConfig) -> tuple[dict, dict]:
     """
     Return (geojson_dict, area_map). Tries local boundary_path first
     (under data_dir), then boundary_url. area_map is {id: name}.
+    GeoJSON coordinates are rounded to 4 dp to reduce browser payload.
     """
     geo: Optional[dict] = None
 
@@ -292,6 +317,9 @@ def load_boundary(city: CityConfig) -> tuple[dict, dict]:
             f"No boundary geometry available for {city.name} "
             f"(boundary_path={city.boundary_path}, boundary_url={city.boundary_url})"
         )
+
+    # Reduce coordinate precision to shrink Plotly figure JSON payload
+    geo = _simplify_geojson(geo)
 
     id_field = city.boundary_id_field
     name_field = city.boundary_name_field
