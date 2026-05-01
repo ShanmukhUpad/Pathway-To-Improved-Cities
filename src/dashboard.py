@@ -140,22 +140,6 @@ with tab_transport:
 
 with tab_infra:
     green_infrastructure.render()
-    st.header("Infrastructure Dashboard")
-    st.markdown(
-        "Exploratory analysis of electricity and gas consumption across "
-        "Chicago census blocks. Use the sidebar to filter by building type and community area."
-    )
-
-    st.info(
-        "No infrastructure dataset loaded yet.\n\n"
-        "**To connect data:** Place a file named `infrastructure_monthly.csv` in the working directory.\n\n"
-        "**Suggested datasets (Chicago Data Portal):**\n"
-        "- [311 Service Requests](https://data.cityofchicago.org/Service-Requests/311-Service-Requests/v6vf-nfxy)\n"
-        "- [Building Permits](https://data.cityofchicago.org/Buildings/Building-Permits/ydr8-5enu)\n"
-        "- [Street Lights - All Out](https://data.cityofchicago.org/Service-Requests/311-Service-Requests-Street-Lights-All-Out/zuxi-7xem)\n"
-        "- [Pothole Repairs](https://data.cityofchicago.org/Service-Requests/311-Service-Requests-Pot-Holes-Reported/7as2-ds3y)\n\n"
-        "**Expected CSV columns:** `Community Area`, `Year`, `Month`, + metric columns"
-    )
 
 
 # ══════════════════════════════════════════════
