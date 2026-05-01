@@ -121,7 +121,9 @@ def render():
     st.subheader("Electricity use vs. building age")
     st.caption("Mean kWh per account vs. average building age, coloured by building type. OLS trend line per group.")
 
-    df_scatter = dff.dropna(subset=["KWH MEAN 2010", "AVERAGE BUILDING AGE", "BUILDING TYPE"])
+    df_scatter = dff.dropna(subset=["KWH MEAN 2010", "AVERAGE BUILDING AGE", "BUILDING TYPE"]).copy()
+    df_scatter["KWH MEAN 2010"] = pd.to_numeric(df_scatter["KWH MEAN 2010"], errors="coerce")
+    df_scatter = df_scatter.dropna(subset=["KWH MEAN 2010"])
     kwh_cap    = df_scatter["KWH MEAN 2010"].quantile(0.99) if len(df_scatter) else 1
     df_scatter = df_scatter[df_scatter["KWH MEAN 2010"] <= kwh_cap]
 
