@@ -133,7 +133,16 @@ def render(city: CityConfig, geo: dict, area_map: dict):
     area_data = pivot[pivot['Community Area Name'] == selected_area].sort_values(['Year', 'Month'])
 
     st.subheader(f"Historical {selected_crime} counts — {selected_area}")
-    st.line_chart(area_data[selected_crime].values)
+    _hist = area_data[['Year', 'Month', selected_crime]].copy().dropna(subset=[selected_crime])
+    _hist['Period'] = _hist['Year'].astype(str) + '-' + _hist['Month'].astype(str).str.zfill(2)
+    _fig_hist = px.line(
+        _hist, x='Period', y=selected_crime,
+        labels={'Period': 'Month', selected_crime: 'Count'},
+        markers=True,
+    )
+    _fig_hist.update_xaxes(tickangle=-45, nticks=min(24, len(_hist)))
+    _fig_hist.update_layout(margin={"t": 10, "b": 0}, height=320)
+    st.plotly_chart(_fig_hist, width="stretch")
 
     latest_val = mean_val = 0.0
     if not area_data[selected_crime].dropna().empty:
