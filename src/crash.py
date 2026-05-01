@@ -1,10 +1,18 @@
 import io
 import json
 import os
+from datetime import datetime
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import geopandas as gpd
+from sklearn.linear_model import Ridge
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import r2_score, mean_squared_error
 import ml_predictor
 import map_utils
 from city_config import CityConfig
@@ -108,6 +116,70 @@ def _load_crash_data(city_key: str, path: str):
     return _clean_crash_df(df)
 
 
+@st.cache_data(show_spinner="Forecasting crash trend...")
+def _crash_monthly_forecast(city_key: str, path: str):
+    """Build city-wide monthly crash count time series + forecast next month."""
+    raw = pd.read_csv(path, usecols=["CRASH_DATE"], low_memory=False)
+    raw["CRASH_DATE"] = pd.to_datetime(raw["CRASH_DATE"], errors="coerce")
+    raw = raw.dropna(subset=["CRASH_DATE"])
+    raw["Period"] = raw["CRASH_DATE"].dt.to_period("M")
+    monthly = raw.groupby("Period").size().reset_index(name="count")
+    monthly = monthly.sort_values("Period").reset_index(drop=True)
+    monthly["label"] = monthly["Period"].astype(str)
+    if len(monthly) < 6:
+        return None
+
+    s = monthly["count"].values.astype(float)
+    lag1 = np.concatenate([[np.nan], s[:-1]])
+    lag2 = np.concatenate([[np.nan, np.nan], s[:-2]])
+    lag3 = np.concatenate([[np.nan, np.nan, np.nan], s[:-3]])
+    roll3 = pd.Series(s).shift(1).rolling(3, min_periods=1).mean().values
+    df_f = pd.DataFrame({"count": s, "lag1": lag1, "lag2": lag2, "lag3": lag3, "roll3": roll3})
+    df_f = df_f.dropna()
+    if len(df_f) < 6:
+        return None
+
+    X = df_f[["lag1", "lag2", "lag3", "roll3"]].values
+    y = df_f["count"].values
+
+    n_splits = min(4, max(2, len(X) // 4))
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    candidates = {
+        "Ridge": lambda: make_pipeline(StandardScaler(), Ridge(alpha=1.0)),
+        "RandomForest": lambda: RandomForestRegressor(n_estimators=100, random_state=42),
+    }
+    best_name, best_r2, best_rmse = None, -np.inf, np.inf
+    for name, mk in candidates.items():
+        r2s, rmses = [], []
+        for tr, te in tscv.split(X):
+            m = mk(); m.fit(X[tr], y[tr]); p = m.predict(X[te])
+            r2s.append(r2_score(y[te], p))
+            rmses.append(np.sqrt(mean_squared_error(y[te], p)))
+        avg = float(np.clip(np.mean(r2s), -1, 1))
+        if avg > best_r2:
+            best_name, best_r2, best_rmse = name, avg, float(np.mean(rmses))
+
+    model = candidates[best_name]()
+    model.fit(X, y)
+    x_next = np.array([[s[-1], s[-2], s[-3], np.mean(s[-3:])]])
+    prediction = max(0.0, float(model.predict(x_next)[0]))
+    latest = float(s[-1])
+
+    _today = datetime.now()
+    _nm = _today.replace(month=_today.month % 12 + 1,
+                         year=_today.year + (_today.month // 12))
+    return {
+        "prediction": prediction,
+        "latest": latest,
+        "next_label": _nm.strftime("%B %Y"),
+        "r2": best_r2,
+        "rmse": best_rmse,
+        "model": best_name,
+        "monthly_labels": monthly["label"].tolist(),
+        "monthly_counts": monthly["count"].tolist(),
+    }
+
+
 @st.cache_data(show_spinner="Loading geometries for crash join...")
 def _load_geo_gdf_crash(city_key: str, geo_json_str: str, id_field: str):
     gdf = gpd.read_file(io.StringIO(geo_json_str), driver="GeoJSON")
@@ -178,6 +250,52 @@ def render(city: CityConfig, geo: dict | None = None):
     if df1.empty:
         st.warning("Crash dataset cleaned to zero rows. Schema may differ for this city.")
         return
+
+    # ── Crash forecast card ──────────────────────────────────────────────
+    try:
+        fc = _crash_monthly_forecast(city.key, path)
+        if fc:
+            pred   = fc["prediction"]
+            latest = fc["latest"]
+            delta  = pred - latest
+            arrow  = "▲" if delta >= 0 else "▼"
+            chg    = "increase" if delta >= 0 else "decrease"
+            st.markdown(f"""
+<div style="background:rgba(224,80,80,0.1);border-left:4px solid #e05050;
+            padding:18px 22px;border-radius:8px;margin:14px 0 20px;">
+  <p style="margin:0;font-size:11px;color:#9eaec4;text-transform:uppercase;
+            letter-spacing:.08em;">Crash Forecast — {fc['next_label']}</p>
+  <p style="margin:6px 0 2px;font-size:2.4rem;font-weight:800;
+            color:#ffffff;line-height:1.1;">
+    {round(pred):,}
+    <span style="font-size:1.1rem;font-weight:500;color:#e08080;">
+      &nbsp;CRASHES
+    </span>
+  </p>
+  <p style="margin:2px 0 0;font-size:14px;color:#9eaec4;">
+    in <strong style="color:#ffffff;">{city.name}</strong>
+    &nbsp;·&nbsp; {arrow} {abs(delta):,.0f} from last month
+  </p>
+</div>""", unsafe_allow_html=True)
+            cf1, cf2, cf3 = st.columns(3)
+            cf1.metric("Forecast", f"{round(pred):,}")
+            cf2.metric("CV RMSE", f"±{fc['rmse']:.0f}")
+            cf3.metric("CV R²",   f"{fc['r2']:.3f}")
+            st.caption(f"Model: **{fc['model']}** · time-series CV · city-wide monthly crashes")
+
+            # Monthly trend line
+            fig_trend = px.line(
+                x=fc["monthly_labels"], y=fc["monthly_counts"],
+                labels={"x": "Month", "y": "Crashes"},
+                title="Monthly crash trend",
+                markers=True,
+            )
+            fig_trend.update_xaxes(tickangle=-45, nticks=24)
+            fig_trend.update_layout(margin={"t": 30, "b": 0}, height=280)
+            st.plotly_chart(fig_trend, width="stretch")
+            st.divider()
+    except Exception as _exc:
+        pass  # forecast optional — don't block rest of tab
 
     # ── Timing ──────────────────────────────────────────────────────────
     st.subheader("Crash Timing")

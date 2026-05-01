@@ -136,13 +136,45 @@ def render(city: CityConfig, geo: dict | None = None):
 
     st.markdown(f"# {city.name} — Socioeconomic Hardship")
 
-    if data["metrics"] is None:
-        st.info("Model skipped — census file missing required feature columns.")
-    else:
+    # ── Hardship forecast card ────────────────────────────────────────────
+    if data["metrics"] is not None:
         m = data["metrics"]
-        c1, c2 = st.columns(2)
-        c1.metric("RF — R²", f"{m['rf']['r2']:.3f}", help=f"MAE {m['rf']['mae']}")
-        c2.metric("GB — R²", f"{m['gb']['r2']:.3f}", help=f"MAE {m['gb']['mae']}")
+        df_sc = data["df"]
+        name_col = data["name_col"]
+        # Show city-wide average hardship prediction vs actual
+        if "HARDSHIP INDEX" in df_sc.columns and "RF_Predicted" in df_sc.columns:
+            city_avg_actual = float(df_sc["HARDSHIP INDEX"].mean())
+            city_avg_pred   = float(df_sc["RF_Predicted"].mean())
+            rf_r2 = m["rf"]["r2"]
+            delta = city_avg_pred - city_avg_actual
+            arrow = "▲" if delta >= 0 else "▼"
+            st.markdown(f"""
+<div style="background:rgba(80,80,224,0.1);border-left:4px solid #5050e0;
+            padding:18px 22px;border-radius:8px;margin:14px 0 20px;">
+  <p style="margin:0;font-size:11px;color:#9eaec4;text-transform:uppercase;
+            letter-spacing:.08em;">Hardship Forecast — {city.name} City Average</p>
+  <p style="margin:6px 0 2px;font-size:2.4rem;font-weight:800;
+            color:#ffffff;line-height:1.1;">
+    {city_avg_pred:.1f}
+    <span style="font-size:1.1rem;font-weight:500;color:#9090f0;">
+      &nbsp;HARDSHIP INDEX
+    </span>
+  </p>
+  <p style="margin:2px 0 0;font-size:14px;color:#9eaec4;">
+    Actual avg: <strong style="color:#ffffff;">{city_avg_actual:.1f}</strong>
+    &nbsp;·&nbsp; {arrow} {abs(delta):.1f} predicted vs actual
+    &nbsp;·&nbsp; RF CV R² <strong style="color:#ffffff;">{rf_r2:.3f}</strong>
+  </p>
+</div>""", unsafe_allow_html=True)
+            c1, c2 = st.columns(2)
+            c1.metric("RF — R²", f"{m['rf']['r2']:.3f}", help=f"MAE {m['rf']['mae']}")
+            c2.metric("GB — R²", f"{m['gb']['r2']:.3f}", help=f"MAE {m['gb']['mae']}")
+        else:
+            c1, c2 = st.columns(2)
+            c1.metric("RF — R²", f"{m['rf']['r2']:.3f}")
+            c2.metric("GB — R²", f"{m['gb']['r2']:.3f}")
+    else:
+        st.info("Model skipped — census file missing required feature columns.")
 
     tab_map, tab_diag, tab_imp = st.tabs([
         "Choropleth Map", "Model Diagnostics", "Feature Importance",
