@@ -43,19 +43,39 @@ def _cached_boundary(city_key: str):
     return load_boundary(get_city(city_key))
 
 
-# Top-of-page city dropdown
+# ── City + basemap selectors ──────────────────────────────────────────────────
 city_keys = [k for k, _ in list_cities()]
 city_labels = {k: name for k, name in list_cities()}
 
 if "active_city" not in st.session_state:
     st.session_state["active_city"] = DEFAULT_CITY_KEY
 
-active_key = st.selectbox(
-    "City",
-    city_keys,
-    format_func=lambda k: city_labels[k],
-    key="active_city",
-)
+_BASEMAPS = {
+    "Streets (OpenStreetMap)": "open-street-map",
+    "Light (Carto Positron)":  "carto-positron",
+    "Dark (Carto Dark Matter)": "carto-darkmatter",
+    "Terrain (Stamen)":        "stamen-terrain",
+    "Blank white":             "white-bg",
+}
+
+_sel_col, _map_col = st.columns([1, 1])
+with _sel_col:
+    active_key = st.selectbox(
+        "City",
+        city_keys,
+        format_func=lambda k: city_labels[k],
+        key="active_city",
+    )
+with _map_col:
+    _bm_label = st.selectbox(
+        "Basemap",
+        list(_BASEMAPS.keys()),
+        index=0,
+        key="basemap_label",
+    )
+
+# Store selected style in session_state so all modules can read it
+st.session_state["basemap_style"] = _BASEMAPS[_bm_label]
 city = get_city(active_key)
 
 # Load this city's boundary (may be empty for cities without wired geometry)

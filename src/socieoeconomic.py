@@ -198,15 +198,17 @@ def render(city: CityConfig, geo: dict | None = None):
             }
             chosen = col_map[choice]
             geojson_dict = merged.__geo_interface__
-            fig = px.choropleth(
+            fig = px.choropleth_map(
                 merged, geojson=geojson_dict,
                 locations=city.census_id_col,
                 featureidkey=f"properties.{city.census_id_col}",
                 color=chosen, color_continuous_scale="YlOrRd",
+                map_style=mapbox_style, zoom=city.zoom,
+                center={"lat": city.center[0], "lon": city.center[1]},
+                opacity=0.7,
                 hover_name=data["name_col"] if data["name_col"] in merged.columns else None,
                 title=choice,
             )
-            fig.update_geos(fitbounds="locations", visible=False)
             fig.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=620)
             st.plotly_chart(fig, width="stretch")
 

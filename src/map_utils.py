@@ -45,20 +45,9 @@ def init_mapbox():
 
 
 def mapbox_style_picker(key_prefix: str = "map") -> str:
-    """
-    Render a selectbox for map styles and return the chosen style string.
-    Shows all styles when a Mapbox token is set; otherwise only open-street-map.
-    """
-    if not MAPBOX_TOKEN:
-        return "open-street-map"
-
-    choice = st.selectbox(
-        "Map style",
-        list(MAP_STYLES.keys()),
-        index=1,  # default to Streets
-        key=f"{key_prefix}_map_style",
-    )
-    return MAP_STYLES[choice]
+    """Return the globally selected basemap style from session_state.
+    Falls back to open-street-map. key_prefix kept for API compat."""
+    return st.session_state.get("basemap_style", "open-street-map")
 
 
 # ── Moran's I ────────────────────────────────────────────────────────────────
@@ -290,7 +279,7 @@ def render_moran_analysis(
             value_col: valid[value_col].values,
         })
 
-        fig_lisa = px.choropleth(
+        fig_lisa = px.choropleth_map(
             lisa_df, geojson=geojson,
             locations=id_col, featureidkey=featureidkey,
             color="LISA Cluster",
@@ -300,9 +289,10 @@ def render_moran_analysis(
             ]},
             hover_name=name_col,
             hover_data={value_col: True, "LISA Cluster": True},
+            map_style=map_style, zoom=map_zoom,
+            center=map_center, opacity=0.7,
             title="LISA Cluster Map",
         )
-        fig_lisa.update_geos(fitbounds="locations", visible=False)
         fig_lisa.update_layout(
             margin={"r": 0, "t": 30, "l": 0, "b": 0},
             legend=dict(orientation="h", yanchor="bottom", y=-0.15),
@@ -416,7 +406,7 @@ def render_moran_analysis(
     })
 
     with col_pmap:
-        fig_pval = px.choropleth(
+        fig_pval = px.choropleth_map(
             sig_df, geojson=geojson,
             locations=id_col, featureidkey=featureidkey,
             color="p-value",
@@ -424,16 +414,17 @@ def render_moran_analysis(
             range_color=[0, 0.1],
             hover_name=name_col,
             hover_data={"p-value": ":.4f"},
+            map_style=map_style, zoom=map_zoom,
+            center=map_center, opacity=0.7,
             title="Local p-values (Moran's I)",
         )
-        fig_pval.update_geos(fitbounds="locations", visible=False)
         fig_pval.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
         st.plotly_chart(fig_pval, width="stretch")
 
     with col_imap:
         local_is_arr = np.array(local_is)
         max_abs = max(abs(local_is_arr.min()), abs(local_is_arr.max()), 0.01)
-        fig_local_i = px.choropleth(
+        fig_local_i = px.choropleth_map(
             sig_df, geojson=geojson,
             locations=id_col, featureidkey=featureidkey,
             color="Local Moran's I",
@@ -441,9 +432,10 @@ def render_moran_analysis(
             range_color=[-max_abs, max_abs],
             hover_name=name_col,
             hover_data={"Local Moran's I": ":.4f", "p-value": ":.4f"},
+            map_style=map_style, zoom=map_zoom,
+            center=map_center, opacity=0.7,
             title="Local Moran's I Values",
         )
-        fig_local_i.update_geos(fitbounds="locations", visible=False)
         fig_local_i.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
         st.plotly_chart(fig_local_i, width="stretch")
 
@@ -475,7 +467,7 @@ def render_moran_analysis(
         "Gi* p-value": result["gi_p_values"],
     })
 
-    fig_gi = px.choropleth(
+    fig_gi = px.choropleth_map(
         gi_df, geojson=geojson,
         locations=id_col, featureidkey=featureidkey,
         color="Gi* Classification",
@@ -488,9 +480,10 @@ def render_moran_analysis(
         ]},
         hover_name=name_col,
         hover_data={value_col: True, "Gi* z-score": ":.4f", "Gi* p-value": ":.4f"},
+        map_style=map_style, zoom=map_zoom,
+        center=map_center, opacity=0.7,
         title="Gi* Hot/Cold Spot Map",
     )
-    fig_gi.update_geos(fitbounds="locations", visible=False)
     fig_gi.update_layout(
         margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=550,
         legend=dict(orientation="h", yanchor="bottom", y=-0.15),
