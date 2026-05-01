@@ -8,6 +8,7 @@ import public_safety
 import socieoeconomic
 import data_fetcher
 import transportation_access
+import green_infrastructure
 import map_utils
 
 st.set_page_config(
@@ -137,9 +138,11 @@ with tab_transport:
 # ══════════════════════════════════════════════
 
 with tab_infra:
+    green_infrastructure.render()
     st.header("Infrastructure Dashboard")
     st.markdown(
-        "Track infrastructure quality, 311 service requests, building permits, and public facility conditions."
+        "Exploratory analysis of electricity and gas consumption across "
+        "Chicago census blocks. Use the sidebar to filter by building type and community area."
     )
 
     st.info(
