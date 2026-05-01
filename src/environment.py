@@ -129,7 +129,8 @@ def _train_model(merged_json: str):
 
 @st.cache_data(show_spinner=False)
 def _build_monthly_series(complaints_json: str, area_title: str):
-    complaints_clean = pd.read_json(complaints_json)
+    import io as _io
+    complaints_clean = pd.read_json(_io.StringIO(complaints_json))
     complaints_clean["COMPLAINT_DATE"] = pd.to_datetime(complaints_clean["COMPLAINT_DATE"])
     ca = complaints_clean.copy()
     ca["month"] = ca["COMPLAINT_DATE"].dt.to_period("M").dt.to_timestamp()
@@ -152,7 +153,8 @@ def _build_monthly_series(complaints_json: str, area_title: str):
 
 @st.cache_data(show_spinner="Training complaint forecast model...")
 def _run_complaint_forecast(monthly_json: str):
-    monthly = pd.read_json(monthly_json)
+    import io as _io
+    monthly = pd.read_json(_io.StringIO(monthly_json))
     feature_cols = ["count_lag1", "count_lag3", "count_lag12", "count_rolling3", "Month", "Year"]
     model_data = monthly.dropna(subset=feature_cols + ["count"])
     if len(model_data) < 10:
