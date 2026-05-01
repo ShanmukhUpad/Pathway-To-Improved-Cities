@@ -299,30 +299,28 @@ def render(chicago_geo=None):
 
         col_act, col_pred = st.columns(2)
         with col_act:
-            fig_actual = px.choropleth_map(
+            fig_actual = px.choropleth(
                 merged_geo, geojson=chicago_geo,
                 locations="area_num", featureidkey="properties.area_num_1",
                 color=target, color_continuous_scale="Viridis",
-                map_style="open-street-map", zoom=9,
-                center={"lat": 41.85, "lon": -87.68}, opacity=0.7,
                 hover_name="Community Area",
                 hover_data={target: ":.2f", "RF_Predicted": ":.2f", "area_num": False},
                 title=f"Actual {target.replace('_', ' ').title()}",
             )
+            fig_actual.update_geos(fitbounds="locations", visible=False)
             fig_actual.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=420)
             st.plotly_chart(fig_actual, width="stretch")
 
         with col_pred:
-            fig_pred = px.choropleth_map(
+            fig_pred = px.choropleth(
                 merged_geo, geojson=chicago_geo,
                 locations="area_num", featureidkey="properties.area_num_1",
                 color="RF_Predicted", color_continuous_scale="Viridis",
-                map_style="open-street-map", zoom=9,
-                center={"lat": 41.85, "lon": -87.68}, opacity=0.7,
                 hover_name="Community Area",
                 hover_data={target: ":.2f", "RF_Predicted": ":.2f", "area_num": False},
                 title="RF Predicted",
             )
+            fig_pred.update_geos(fitbounds="locations", visible=False)
             fig_pred.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=420)
             st.plotly_chart(fig_pred, width="stretch")
 

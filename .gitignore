@@ -94,3 +94,9 @@ src/chicago/clean_benchmark.csv
 src/chicago/cta_ridership.csv
 src/chicago/Crimes_2026.csv
 src/chicago/chives-data-public.geojson
+src/clean_energy.csv
+src/clean_complaints.csv
+src/clean_benchmark.csv
+src/Crimes_2026.csv
+src/chives-data-public.geojson
+src/cta_ridership.csv

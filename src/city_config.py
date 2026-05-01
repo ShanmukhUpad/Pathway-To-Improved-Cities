@@ -136,7 +136,7 @@ CITIES: dict[str, CityConfig] = {
     "chicago": CityConfig(
         key="chicago",
         name="Chicago",
-        data_dir="chicago",
+        data_dir=".",  # CSVs live in src/ root
         crime_csv="crime_monthly_pivot.csv",
         crash_csv="traffic_crashes_latest.csv",
         census_csv="censusChicago.csv",

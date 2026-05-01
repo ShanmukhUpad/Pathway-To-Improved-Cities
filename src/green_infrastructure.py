@@ -14,7 +14,8 @@ from sklearn.preprocessing import StandardScaler
 
 @st.cache_data(show_spinner="Running energy forecast...")
 def _forecast_area_energy(area_name: str, fc_series_json: str):
-    fc_series = pd.read_json(fc_series_json, typ="series").values.astype(float)
+    import io as _io
+    fc_series = pd.read_json(_io.StringIO(fc_series_json), typ="series").values.astype(float)
     months = np.arange(1, 13)
     lag1 = np.concatenate([[np.nan], fc_series[:-1]])
     lag2 = np.concatenate([[np.nan, np.nan], fc_series[:-2]])

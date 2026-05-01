@@ -18,9 +18,9 @@ import map_utils
 
 _SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 
-ENERGY_CSV     = os.path.join(_SRC_DIR, "chicago", "clean_energy.csv")
-BENCHMARK_CSV  = os.path.join(_SRC_DIR, "chicago", "clean_benchmark.csv")
-COMPLAINTS_CSV = os.path.join(_SRC_DIR, "chicago", "clean_complaints.csv")
+ENERGY_CSV     = os.path.join(_SRC_DIR, "clean_energy.csv")
+BENCHMARK_CSV  = os.path.join(_SRC_DIR, "clean_benchmark.csv")
+COMPLAINTS_CSV = os.path.join(_SRC_DIR, "clean_complaints.csv")
     
 NUMERIC_COLS = [
     "TOTAL_KWH",
@@ -328,19 +328,17 @@ def render(city=None, geo=None):
         plot_df["Community Area Name"] = plot_df["COMMUNITY_AREA_NAME"]
 
         scale = "Greens" if selected_metric in ("energy_intensity", "TOTAL_KWH", "TOTAL_THERMS") else "Reds"
-        fig_map = px.choropleth_map(
+        fig_map = px.choropleth(
             plot_df,
             geojson=chicago_geo,
             locations="Community Area Name",
             featureidkey="properties.community",
             color=selected_metric,
             color_continuous_scale=scale,
-            map_style=mapbox_style,
-            zoom=9,
-            center={"lat": 41.8781, "lon": -87.6298},
-            opacity=0.55,
-            labels={selected_metric: metric_options[selected_metric]},
+labels={selected_metric: metric_options[selected_metric]},
         )
+        fig_map.update_geos(fitbounds="locations", visible=False)
+        fig_map.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0}, height=500)
         fig_map.update_coloraxes(colorbar_tickformat=".2f")
         st.plotly_chart(fig_map, width="stretch")
 

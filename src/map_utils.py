@@ -290,7 +290,7 @@ def render_moran_analysis(
             value_col: valid[value_col].values,
         })
 
-        fig_lisa = px.choropleth_map(
+        fig_lisa = px.choropleth(
             lisa_df, geojson=geojson,
             locations=id_col, featureidkey=featureidkey,
             color="LISA Cluster",
@@ -298,13 +298,11 @@ def render_moran_analysis(
             category_orders={"LISA Cluster": [
                 "HH (Hot Spot)", "HL", "LH", "LL (Cold Spot)", "Not Significant"
             ]},
-            map_style=map_style,
-            zoom=map_zoom, center=map_center,
-            opacity=0.7,
             hover_name=name_col,
             hover_data={value_col: True, "LISA Cluster": True},
             title="LISA Cluster Map",
         )
+        fig_lisa.update_geos(fitbounds="locations", visible=False)
         fig_lisa.update_layout(
             margin={"r": 0, "t": 30, "l": 0, "b": 0},
             legend=dict(orientation="h", yanchor="bottom", y=-0.15),
@@ -418,38 +416,34 @@ def render_moran_analysis(
     })
 
     with col_pmap:
-        fig_pval = px.choropleth_map(
+        fig_pval = px.choropleth(
             sig_df, geojson=geojson,
             locations=id_col, featureidkey=featureidkey,
             color="p-value",
             color_continuous_scale="YlOrRd_r",
             range_color=[0, 0.1],
-            map_style=map_style,
-            zoom=map_zoom, center=map_center,
-            opacity=0.7,
             hover_name=name_col,
             hover_data={"p-value": ":.4f"},
             title="Local p-values (Moran's I)",
         )
+        fig_pval.update_geos(fitbounds="locations", visible=False)
         fig_pval.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
         st.plotly_chart(fig_pval, width="stretch")
 
     with col_imap:
         local_is_arr = np.array(local_is)
         max_abs = max(abs(local_is_arr.min()), abs(local_is_arr.max()), 0.01)
-        fig_local_i = px.choropleth_map(
+        fig_local_i = px.choropleth(
             sig_df, geojson=geojson,
             locations=id_col, featureidkey=featureidkey,
             color="Local Moran's I",
             color_continuous_scale="RdBu_r",
             range_color=[-max_abs, max_abs],
-            map_style=map_style,
-            zoom=map_zoom, center=map_center,
-            opacity=0.7,
             hover_name=name_col,
             hover_data={"Local Moran's I": ":.4f", "p-value": ":.4f"},
             title="Local Moran's I Values",
         )
+        fig_local_i.update_geos(fitbounds="locations", visible=False)
         fig_local_i.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=500)
         st.plotly_chart(fig_local_i, width="stretch")
 
@@ -481,7 +475,7 @@ def render_moran_analysis(
         "Gi* p-value": result["gi_p_values"],
     })
 
-    fig_gi = px.choropleth_map(
+    fig_gi = px.choropleth(
         gi_df, geojson=geojson,
         locations=id_col, featureidkey=featureidkey,
         color="Gi* Classification",
@@ -492,13 +486,11 @@ def render_moran_analysis(
             "Cold Spot (90% confidence)", "Cold Spot (95% confidence)",
             "Cold Spot (99% confidence)",
         ]},
-        map_style=map_style,
-        zoom=map_zoom, center=map_center,
-        opacity=0.7,
         hover_name=name_col,
         hover_data={value_col: True, "Gi* z-score": ":.4f", "Gi* p-value": ":.4f"},
         title="Gi* Hot/Cold Spot Map",
     )
+    fig_gi.update_geos(fitbounds="locations", visible=False)
     fig_gi.update_layout(
         margin={"r": 0, "t": 30, "l": 0, "b": 0}, height=550,
         legend=dict(orientation="h", yanchor="bottom", y=-0.15),

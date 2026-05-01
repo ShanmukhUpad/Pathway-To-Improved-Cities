@@ -230,16 +230,17 @@ def render(city: CityConfig, geo: dict, area_map: dict):
         )
         map_data = pivot.groupby(['_area_key', 'Community Area Name'])[crime_map_type].sum().reset_index()
         map_data['_area_key'] = map_data['_area_key'].astype(str)
-        fig = px.choropleth_map(
+        fig = px.choropleth(
             map_data, geojson=geo,
             locations='_area_key', featureidkey=feature_id_key,
             color=crime_map_type, color_continuous_scale="Reds",
-            map_style=mapbox_style, zoom=city.zoom,
-            center={"lat": city.center[0], "lon": city.center[1]}, opacity=0.5,
             labels={crime_map_type: "Crime Count"},
             hover_name='Community Area Name',
+            hover_data={'_area_key': False},
         )
-        fig.update_coloraxes(colorbar_tickformat='.2f')
+        fig.update_geos(fitbounds="locations", visible=False)
+        fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=450)
+        fig.update_coloraxes(colorbar_tickformat='.0f')
         st.plotly_chart(fig, width="stretch")
 
     with col_map2:
@@ -265,17 +266,18 @@ def render(city: CityConfig, geo: dict, area_map: dict):
                     latest_month[lag_cols].fillna(0)
                 ).round(2)
                 latest_month['_area_key'] = latest_month['_area_key'].astype(str)
-                fig_pred = px.choropleth_map(
+                fig_pred = px.choropleth(
                     latest_month[['_area_key', 'Community Area Name', 'Predicted']],
                     geojson=geo,
                     locations='_area_key', featureidkey=feature_id_key,
                     color='Predicted', color_continuous_scale="Reds",
-                    map_style=mapbox_style, zoom=city.zoom,
-                    center={"lat": city.center[0], "lon": city.center[1]}, opacity=0.5,
                     labels={'Predicted': f'Predicted {crime_pred_type}'},
                     hover_name='Community Area Name',
+                    hover_data={'_area_key': False},
                 )
-                fig_pred.update_coloraxes(colorbar_tickformat='.2f')
+                fig_pred.update_geos(fitbounds="locations", visible=False)
+                fig_pred.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=450)
+                fig_pred.update_coloraxes(colorbar_tickformat='.0f')
                 st.plotly_chart(fig_pred, width="stretch")
 
                 top_pred = latest_month.nlargest(3, "Predicted")[["Community Area Name", "Predicted"]]
