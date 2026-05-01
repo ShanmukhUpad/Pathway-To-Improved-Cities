@@ -367,3 +367,11 @@ renderBars('gbp', gbImp, 'linear-gradient(90deg,#d86b3a,#f7934f)');
                     st.plotly_chart(fig_pop, width="stretch")
         except Exception as exc:
             st.warning(f"Population data load failed: {exc}")
+
+    # ── ChiVes equity + environment index ─────────────────────────────────
+    if city.key == "chicago":
+        try:
+            import chives
+            chives.render(chicago_geo=geo)
+        except Exception as exc:
+            st.warning(f"ChiVes section failed: {exc}")

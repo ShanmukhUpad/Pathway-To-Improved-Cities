@@ -63,18 +63,23 @@ class CityConfig:
     token_env: str = ""
 
     # Optional extra Chicago-specific CSVs (empty string = not present)
-    crash_csv_legacy: str = ""       # fallback crash dataset
-    energy_csv: str = ""             # building energy usage
-    crimes_supplemental_csv: str = "" # raw crimes dataset for station overlays
+    crash_csv_legacy: str = ""
+    energy_csv: str = ""             # raw energy (space cols) for green_infrastructure
+    clean_energy_csv: str = ""       # clean energy (underscore cols) for environment.py
+    clean_benchmark_csv: str = ""
+    clean_complaints_csv: str = ""
+    chives_geojson: str = ""         # ChiVes tract-level equity dataset
+    crimes_supplemental_csv: str = ""
     fire_stations_csv: str = ""
     police_stations_csv: str = ""
-    acs_csv: str = ""                # ACS 5-year demographic data
-    population_csv: str = ""         # population counts by geography
-    cta_ridership_csv: str = ""      # CTA L-station ridership
+    acs_csv: str = ""
+    population_csv: str = ""
+    cta_ridership_csv: str = ""
 
     # Capability flags
     has_transport_layer: bool = False
     has_energy_layer: bool = False
+    has_environment_layer: bool = False
 
     # Helpers --------------------------------------------------------------
     def path(self, filename: str) -> str:
@@ -150,8 +155,13 @@ CITIES: dict[str, CityConfig] = {
         token_env="CHICAGO_DATA_PORTAL_TOKEN",
         has_transport_layer=True,
         has_energy_layer=True,
-        crash_csv_legacy="",  # 608MB — fetched via API, never committed
+        has_environment_layer=True,
+        crash_csv_legacy="",
         energy_csv="energy_usage_2010.csv",
+        clean_energy_csv="clean_energy.csv",
+        clean_benchmark_csv="clean_benchmark.csv",
+        clean_complaints_csv="clean_complaints.csv",
+        chives_geojson="chives-data-public.geojson",
         crimes_supplemental_csv="Crimes_2026.csv",
         fire_stations_csv="Fire_Stations.csv",
         police_stations_csv="Police_Stations.csv",

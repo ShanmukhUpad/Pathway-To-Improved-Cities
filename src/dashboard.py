@@ -7,6 +7,7 @@ import socieoeconomic
 import data_fetcher
 import transportation_access
 import green_infrastructure
+import environment
 import map_utils
 from city_config import CITIES, DEFAULT_CITY_KEY, get_city, load_boundary, list_cities
 
@@ -90,10 +91,11 @@ with st.sidebar:
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
 
-tab_safety, tab_transport, tab_infra, tab_socio, tab_upload = st.tabs([
+tab_safety, tab_transport, tab_infra, tab_env, tab_socio, tab_upload = st.tabs([
     "Public Safety",
     "Transportation",
     "Infrastructure",
+    "Environment",
     "Socioeconomics & Diversity",
     "Data Upload",
 ])
@@ -108,6 +110,9 @@ with tab_transport:
 
 with tab_infra:
     green_infrastructure.render(city=city)
+
+with tab_env:
+    environment.render(city=city, geo=geo)
 
 with tab_socio:
     socieoeconomic.render(city=city, geo=geo)

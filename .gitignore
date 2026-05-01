@@ -88,4 +88,9 @@ src/traffic_crashes_latest.csv
 
 # Large crash CSVs — pulled at runtime by data_fetcher (>25 MB each)
 src/chicago/traffic_crashes_latest.csv
-src/new_york/traffic_crashes_latest.csv
+src/new_york/traffic_crashes_latest.csvsrc/chicago/clean_energy.csv
+src/chicago/clean_complaints.csv
+src/chicago/clean_benchmark.csv
+src/chicago/cta_ridership.csv
+src/chicago/Crimes_2026.csv
+src/chicago/chives-data-public.geojson

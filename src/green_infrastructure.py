@@ -7,6 +7,27 @@ import requests
 import folium
 from streamlit_folium import st_folium
 import streamlit as st
+from sklearn.linear_model import Ridge
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+
+@st.cache_data(show_spinner="Running energy forecast...")
+def _forecast_area_energy(area_name: str, fc_series_json: str):
+    fc_series = pd.read_json(fc_series_json, typ="series").values.astype(float)
+    months = np.arange(1, 13)
+    lag1 = np.concatenate([[np.nan], fc_series[:-1]])
+    lag2 = np.concatenate([[np.nan, np.nan], fc_series[:-2]])
+    fc_df = pd.DataFrame({"month": months, "kwh": fc_series, "lag1": lag1, "lag2": lag2})
+    fc_df = fc_df.dropna()
+    if len(fc_df) < 5:
+        return None
+    X = fc_df[["month", "lag1", "lag2"]].values
+    y = fc_df["kwh"].values
+    model = make_pipeline(StandardScaler(), Ridge(alpha=1.0))
+    model.fit(X, y)
+    pred_kwh = max(0.0, float(model.predict([[13, fc_series[-1], fc_series[-2]]])[0]))
+    return {"pred_kwh": pred_kwh, "latest_kwh": float(fc_series[-1])}
 
 # ── Palette & constants ───────────────────────────────────────────────────────
 PALETTE = {
@@ -116,8 +137,43 @@ def render(city=None):
     mc2.metric("Community areas", f"{dff['COMMUNITY AREA NAME'].nunique()}")
     st.markdown("---")
 
+    # ── Energy forecast headline ──────────────────────────────────────────────
+    st.subheader("Energy usage forecast")
+    all_areas_fc = sorted(df["COMMUNITY AREA NAME"].dropna().unique())
+    fc_area = st.selectbox("Forecast area", all_areas_fc, key="infra_fc_area")
+
+    area_df = df[df["COMMUNITY AREA NAME"] == fc_area]
+    area_monthly = area_df[MONTHLY_COLS].mean()
+
+    if not area_monthly.isnull().all():
+        fc_result = _forecast_area_energy(fc_area, pd.Series(area_monthly.values.astype(float)).to_json())
+        if fc_result:
+            pred_kwh   = fc_result["pred_kwh"]
+            latest_kwh = fc_result["latest_kwh"]
+            delta  = pred_kwh - latest_kwh
+            arrow  = "▲" if delta >= 0 else "▼"
+            chg_dir = "increase" if delta >= 0 else "decrease"
+            st.markdown(f"""
+<div style="background:rgba(55,138,221,0.1);border-left:4px solid #378ADD;
+            padding:18px 22px;border-radius:8px;margin:14px 0;">
+  <p style="margin:0;font-size:11px;color:#9eaec4;text-transform:uppercase;
+            letter-spacing:.08em;">Energy Forecast — January 2011</p>
+  <p style="margin:6px 0 2px;font-size:2.4rem;font-weight:800;color:#fff;line-height:1.1;">
+    {pred_kwh:,.0f}
+    <span style="font-size:1.1rem;font-weight:500;color:#88bbee;">&nbsp;kWh (mean per block)</span>
+  </p>
+  <p style="margin:2px 0 0;font-size:14px;color:#9eaec4;">
+    in <strong style="color:#fff;">{fc_area}</strong>
+    &nbsp;·&nbsp; {arrow} {abs(delta):,.0f} kWh from December 2010
+  </p>
+</div>""", unsafe_allow_html=True)
+            fcc1, fcc2 = st.columns(2)
+            fcc1.metric("Forecast (Jan 2011)", f"{pred_kwh:,.0f} kWh")
+            fcc2.metric("Dec 2010 actual", f"{latest_kwh:,.0f} kWh")
+    st.markdown("---")
+
     def no_data():
-        st.warning("No data matches the current filters. Adjust the sidebar selections.")
+        st.warning("No data matches the current filters. Adjust filter selections.")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Chart 1 — Scatter: KWH Mean vs Building Age
