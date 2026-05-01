@@ -374,6 +374,15 @@ def render(city: CityConfig, geo: dict, area_map: dict):
             if fire_path and os.path.exists(fire_path):
                 fdf = pd.read_csv(fire_path)
                 fdf.columns = fdf.columns.str.strip()
+                # Parse "(lat, lon)" from LOCATION if no separate columns
+                if 'LATITUDE' not in fdf.columns and 'LOCATION' in fdf.columns:
+                    import re as _re
+                    def _parse_loc(s):
+                        m = _re.search(r'\(([^,]+),\s*([^)]+)\)', str(s))
+                        return (float(m.group(1)), float(m.group(2))) if m else (None, None)
+                    locs = fdf['LOCATION'].map(_parse_loc)
+                    fdf['LATITUDE']  = locs.map(lambda t: t[0])
+                    fdf['LONGITUDE'] = locs.map(lambda t: t[1])
                 if 'LATITUDE' in fdf.columns and 'LONGITUDE' in fdf.columns:
                     fig_fire = px.scatter_map(
                         fdf, lat='LATITUDE', lon='LONGITUDE',

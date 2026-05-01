@@ -88,24 +88,21 @@ def render(city=None):
         return
     df = load_data(energy_csv)
 
-    # ── Sidebar filters ───────────────────────────────────────────────────────
-    st.sidebar.title("Energy filters")
-    st.sidebar.markdown("Applied to all energy charts.")
-
-    all_types = sorted(df["BUILDING TYPE"].dropna().unique())
-    selected_types = st.sidebar.multiselect(
-        "Building type",
-        options=all_types,
-        default=all_types,
-        key="energy_building_type",
+    # ── Header ────────────────────────────────────────────────────────────────
+    st.subheader("Chicago Energy Usage — 2010")
+    st.markdown(
+        "Electricity and gas consumption across Chicago census blocks by building type and community area."
     )
 
+    # ── Inline filters (not sidebar — avoids polluting other tabs) ────────────
+    fc1, fc2 = st.columns(2)
+    all_types = sorted(df["BUILDING TYPE"].dropna().unique())
+    selected_types = fc1.multiselect(
+        "Building type", options=all_types, default=all_types, key="energy_building_type",
+    )
     all_areas = sorted(df["COMMUNITY AREA NAME"].dropna().unique())
-    selected_areas = st.sidebar.multiselect(
-        "Community area",
-        options=all_areas,
-        default=all_areas,
-        key="energy_community_area",
+    selected_areas = fc2.multiselect(
+        "Community area", options=all_areas, default=all_areas, key="energy_community_area",
     )
 
     mask = (
@@ -114,16 +111,9 @@ def render(city=None):
     )
     dff = df[mask].copy()
 
-    st.sidebar.markdown("---")
-    st.sidebar.metric("Rows selected", f"{len(dff):,}")
-    st.sidebar.metric("Community areas", f"{dff['COMMUNITY AREA NAME'].nunique()}")
-
-    # ── Header ────────────────────────────────────────────────────────────────
-    st.title("Chicago Energy Usage — 2010 EDA")
-    st.markdown(
-        "Exploratory analysis of electricity and gas consumption across "
-        "Chicago census blocks. Use the sidebar to filter by building type and community area."
-    )
+    mc1, mc2 = st.columns(2)
+    mc1.metric("Rows selected", f"{len(dff):,}")
+    mc2.metric("Community areas", f"{dff['COMMUNITY AREA NAME'].nunique()}")
     st.markdown("---")
 
     def no_data():
