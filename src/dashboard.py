@@ -10,6 +10,7 @@ import data_fetcher
 import transportation_access
 import green_infrastructure
 import map_utils
+from streamlit_folium import st_folium
 
 st.set_page_config(
     page_title="Pathway to Improved Cities",
