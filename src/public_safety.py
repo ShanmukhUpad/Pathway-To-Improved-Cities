@@ -209,8 +209,6 @@ def render(city: CityConfig, geo: dict, area_map: dict):
             "weak" if r2 >= 0.0 else
             "poor (worse than baseline)"
         )
-        trend_vs_latest = prediction - latest_val if not area_data[selected_crime].dropna().empty else 0
-        chg_dir = "increase" if trend_vs_latest > 0 else "decrease"
         st.info(
             f"**Forecast for {next_month_label}:** "
             f"**{round(prediction):,} {selected_crime}** in {selected_area} — "
@@ -364,6 +362,44 @@ def render(city: CityConfig, geo: dict, area_map: dict):
             st.warning(f"Need ≥10 areas for Moran's I (have {len(gdf_merged)}).")
     except Exception as exc:
         st.warning(f"Moran's I unavailable: {exc}")
+
+    # ── Emergency services overlay (Chicago) ─────────────────────────────
+    fire_path = city.path(city.fire_stations_csv) if city.fire_stations_csv else None
+    police_path = city.path(city.police_stations_csv) if city.police_stations_csv else None
+    if (fire_path and os.path.exists(fire_path)) or (police_path and os.path.exists(police_path)):
+        st.divider()
+        st.subheader("Emergency Services Locations")
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            if fire_path and os.path.exists(fire_path):
+                fdf = pd.read_csv(fire_path)
+                fdf.columns = fdf.columns.str.strip()
+                if 'LATITUDE' in fdf.columns and 'LONGITUDE' in fdf.columns:
+                    fig_fire = px.scatter_map(
+                        fdf, lat='LATITUDE', lon='LONGITUDE',
+                        hover_name='NAME' if 'NAME' in fdf.columns else None,
+                        title="Fire Stations", zoom=city.zoom,
+                        center={"lat": city.center[0], "lon": city.center[1]},
+                        color_discrete_sequence=["#e05050"],
+                    )
+                    fig_fire.update_traces(marker_size=8)
+                    fig_fire.update_layout(margin={"r":0,"t":30,"l":0,"b":0}, height=350)
+                    st.plotly_chart(fig_fire, width="stretch")
+        with ec2:
+            if police_path and os.path.exists(police_path):
+                pdf = pd.read_csv(police_path)
+                pdf.columns = pdf.columns.str.strip()
+                if 'LATITUDE' in pdf.columns and 'LONGITUDE' in pdf.columns:
+                    fig_pol = px.scatter_map(
+                        pdf, lat='LATITUDE', lon='LONGITUDE',
+                        hover_name='DISTRICT NAME' if 'DISTRICT NAME' in pdf.columns else None,
+                        title="Police Stations", zoom=city.zoom,
+                        center={"lat": city.center[0], "lon": city.center[1]},
+                        color_discrete_sequence=["#4f8ef7"],
+                    )
+                    fig_pol.update_traces(marker_size=8)
+                    fig_pol.update_layout(margin={"r":0,"t":30,"l":0,"b":0}, height=350)
+                    st.plotly_chart(fig_pol, width="stretch")
 
     # ── ML predictor ────────────────────────────────────────────────────
     base_cols = [c for c in pivot.columns if c not in skip

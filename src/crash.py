@@ -9,6 +9,7 @@ import ml_predictor
 import map_utils
 from city_config import CityConfig
 
+
 DAY_LABELS = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
 MONTH_LABELS = {
     1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
@@ -92,6 +93,15 @@ def _clean_crash_df(df):
     return df1, df2
 
 
+def _resolve_crash_path(city: CityConfig) -> str | None:
+    """Primary crash CSV, fall back to legacy dataset if present."""
+    if os.path.exists(city.crash_path):
+        return city.crash_path
+    if city.crash_legacy_path and os.path.exists(city.crash_legacy_path):
+        return city.crash_legacy_path
+    return None
+
+
 @st.cache_data(show_spinner="Loading crash data...")
 def _load_crash_data(city_key: str, path: str):
     df = pd.read_csv(path, low_memory=False)
@@ -154,9 +164,9 @@ def render(city: CityConfig, geo: dict | None = None):
 
     mapbox_style = map_utils.mapbox_style_picker(key_prefix=f"crash_{city.key}")
 
-    path = city.crash_path
-    if not os.path.exists(path):
-        st.warning(f"No crash CSV at `{path}`.")
+    path = _resolve_crash_path(city)
+    if path is None:
+        st.warning(f"No crash CSV for {city.name}. Run data refresh.")
         return
 
     try:

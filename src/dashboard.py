@@ -9,6 +9,7 @@ import public_safety
 import socieoeconomic
 import data_fetcher
 import transportation_access
+import green_infrastructure
 import map_utils
 from city_config import CITIES, DEFAULT_CITY_KEY, get_city, load_boundary, list_cities
 
@@ -129,11 +130,7 @@ with tab_transport:
     transportation_access.render(city=city)
 
 with tab_infra:
-    st.header(f"Infrastructure — {city.name}")
-    st.info(
-        "No infrastructure dataset loaded yet for this city. "
-        "Place `infrastructure_monthly.csv` in the city's data directory."
-    )
+    green_infrastructure.render(city=city)
 
 with tab_socio:
     socieoeconomic.render(city=city, geo=geo)

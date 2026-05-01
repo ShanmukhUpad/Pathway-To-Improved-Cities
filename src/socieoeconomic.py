@@ -321,3 +321,49 @@ renderBars('gbp', gbImp, 'linear-gradient(90deg,#d86b3a,#f7934f)');
                 )
             except Exception as exc:
                 st.warning(f"Moran's I unavailable: {exc}")
+
+    # ── ACS Demographics (Chicago) ───────────────────────────────────────
+    acs_path = city.path(city.acs_csv) if city.acs_csv else None
+    pop_path = city.path(city.population_csv) if city.population_csv else None
+    if acs_path and os.path.exists(acs_path):
+        st.divider()
+        st.subheader("Demographic Profile (ACS 5-Year)")
+        try:
+            acs = pd.read_csv(acs_path, nrows=10000)
+            acs.columns = acs.columns.str.strip()
+            if 'Community Area' in acs.columns:
+                latest_yr = acs['ACS Year'].max() if 'ACS Year' in acs.columns else None
+                acs_latest = acs[acs['ACS Year'] == latest_yr] if latest_yr else acs
+                race_cols = [c for c in ['White', 'Black or African American', 'Asian',
+                                         'Hispanic or Latino', 'Other Race', 'Multiracial']
+                             if c in acs_latest.columns]
+                if race_cols and 'Total Population' in acs_latest.columns:
+                    top20 = acs_latest.nlargest(20, 'Total Population')
+                    fig_demo = px.bar(
+                        top20, x='Community Area', y=race_cols,
+                        title=f"Population by Race — Top 20 Community Areas ({latest_yr})",
+                        labels={'value': 'Population', 'variable': 'Group'},
+                        barmode='stack',
+                    )
+                    fig_demo.update_layout(xaxis_tickangle=-45, margin={"t": 40})
+                    st.plotly_chart(fig_demo, width="stretch")
+        except Exception as exc:
+            st.warning(f"ACS data load failed: {exc}")
+
+    if pop_path and os.path.exists(pop_path):
+        try:
+            pop = pd.read_csv(pop_path, nrows=5000)
+            pop.columns = pop.columns.str.strip()
+            if 'Year' in pop.columns and 'Population - Total' in pop.columns and 'Geography' in pop.columns:
+                city_level = pop[pop.get('Geography Type', pop.get('Geography Type', pd.Series([''] * len(pop)))).str.lower().str.contains('city|chicago', na=False)]
+                if not city_level.empty:
+                    fig_pop = px.line(
+                        city_level.sort_values('Year'),
+                        x='Year', y='Population - Total',
+                        color='Geography' if 'Geography' in city_level.columns else None,
+                        title="Chicago Population Trend",
+                        markers=True,
+                    )
+                    st.plotly_chart(fig_pop, width="stretch")
+        except Exception as exc:
+            st.warning(f"Population data load failed: {exc}")

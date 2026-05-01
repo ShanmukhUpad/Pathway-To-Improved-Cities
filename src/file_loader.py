@@ -15,6 +15,57 @@ import map_utils
 _LAT_ALIASES = {"LATITUDE", "LAT", "Y_COORD", "Y_COORDINATE"}
 _LON_ALIASES = {"LONGITUDE", "LON", "LNG", "LONG", "X_COORD", "X_COORDINATE"}
 
+# Date/time column aliases (upper-cased)
+_DATE_ALIASES = {
+    "DATE", "DATETIME", "TIMESTAMP", "TIME", "DATE_TIME",
+    "YEAR", "MONTH", "DATE_REPORTED", "INCIDENT_DATE", "REPORT_DATE",
+    "CRASH_DATE", "EVENT_DATE", "CREATED_DATE", "UPDATED_DATE",
+    "PERIOD", "WEEK", "QUARTER",
+}
+
+
+def _find_date_col(df: pd.DataFrame):
+    """
+    Scan column names for date-like aliases and validate parseability.
+    Returns (col_name, detection_method) or (None, '').
+    detection_method is one of: 'name_match', 'dtype', 'coercion'.
+    """
+    upper_map = {c.upper().strip(): c for c in df.columns}
+
+    # 1. Alias name match
+    for alias in _DATE_ALIASES:
+        if alias in upper_map:
+            col = upper_map[alias]
+            # Special case: YEAR column with 4-digit integers
+            if alias == "YEAR":
+                try:
+                    years = pd.to_numeric(df[col].dropna().head(10), errors="coerce").dropna()
+                    if len(years) >= 1 and ((years >= 1900) & (years <= 2100)).all():
+                        return col, "name_match"
+                except Exception:
+                    pass
+            else:
+                try:
+                    pd.to_datetime(df[col].dropna().head(5), infer_datetime_format=True)
+                    return col, "name_match"
+                except Exception:
+                    continue
+
+    # 2. Already a datetime dtype
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            return col, "dtype"
+
+    # 3. Content-based coercion (object columns, ≥80% parseable)
+    for col in df.columns:
+        if df[col].dtype == object:
+            sample = df[col].dropna().head(100)
+            parsed = pd.to_datetime(sample, infer_datetime_format=True, errors="coerce")
+            if len(parsed) > 0 and parsed.notna().mean() > 0.8:
+                return col, "coercion"
+
+    return None, ""
+
 # Bounding box column names (case-insensitive)
 _BBOX_NORTH = {"NORTH", "NORTH_BOUND", "NORTH_LAT", "MAX_LAT"}
 _BBOX_SOUTH = {"SOUTH", "SOUTH_BOUND", "SOUTH_LAT", "MIN_LAT"}
@@ -122,15 +173,16 @@ def _read_shapefile(uploaded_files):
 
 def _validate(df):
     """
-    Returns (df, is_valid, lat_col, lon_col, has_latlon).
+    Returns (df, is_valid, lat_col, lon_col, has_latlon, date_col, date_method).
     Requirements: at least one numeric column.
-    Lat/lon is detected but not required (spatial files provide it via geometry).
+    Lat/lon and date detection are optional extras.
     """
     df, lat_col, lon_col = _find_latlon(df)
     has_latlon = lat_col is not None and lon_col is not None
     numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     is_valid = len(numeric_cols) > 0
-    return df, is_valid, lat_col, lon_col, has_latlon
+    date_col, date_method = _find_date_col(df)
+    return df, is_valid, lat_col, lon_col, has_latlon, date_col, date_method
 
 
 # ── Community-area choropleth helpers ─────────────────────────────────────────
@@ -277,14 +329,70 @@ def _render_map(df, lat_col, lon_col, attr, domain, map_style="open-street-map",
 
 # ── Full upload analysis pipeline ─────────────────────────────────────────────
 
-def _render_upload_analysis(df, lat_col, lon_col, domain, gdf=None):
+def _render_no_date_ui(df, numeric_cols, default_attr, key_prefix):
+    """
+    Shown when no date/time column is detected in an uploaded dataset.
+    Offers two paths: designate a time-ordering column, or run cross-sectional
+    Relationship Analysis (which is NOT a future forecast).
+    """
+    st.warning(
+        "**No date or time column was detected in this dataset.** "
+        "Forecasting future values requires a time dimension.\n\n"
+        "You can either:\n"
+        "- **Designate a column** as the time ordering (e.g., a Year, Period, or sequential ID), or\n"
+        "- **Run Relationship Analysis** — identifies which features statistically predict the target, "
+        "but does **not** produce a time-based forecast."
+    )
+    choice = st.radio(
+        "How would you like to proceed?",
+        ["Designate a time-ordering column", "Relationship Analysis (not a forecast)"],
+        key=f"{key_prefix}_no_date_choice",
+    )
+
+    if choice == "Designate a time-ordering column":
+        time_col = st.selectbox(
+            "Select a column to use as time ordering",
+            df.columns.tolist(),
+            key=f"{key_prefix}_time_proxy",
+        )
+        st.caption(
+            "Rows will be sorted by this column in temporal order. "
+            "Ideally pick a column like Year, Month, Period, or a sequential ID."
+        )
+        target = st.selectbox(
+            "Column to forecast",
+            numeric_cols,
+            key=f"{key_prefix}_ts_proxy_tgt",
+        )
+        ml_predictor.render_forecast(
+            df,
+            date_col=time_col,
+            target_col=target,
+            key_prefix=f"{key_prefix}_ts_proxy",
+        )
+    else:
+        st.info(
+            "**Relationship Analysis** uses a Random Forest model to find which features "
+            "statistically explain variation in the target column. "
+            "This is **not** a time-based forecast and cannot predict future values."
+        )
+        ml_predictor.render_predictor(
+            df,
+            key_prefix=key_prefix,
+            default_target=default_attr,
+            default_features=numeric_cols[:min(8, len(numeric_cols))],
+        )
+
+
+def _render_upload_analysis(df, lat_col, lon_col, domain,
+                             date_col=None, date_method="", gdf=None):
     """
     Unified analysis suite rendered for any uploaded dataset regardless of tab:
       1. Map (choropleth or scatter)
       2. Distribution chart + statistics
       3. Dynamic summary insight
       4. Top / bottom 5 rows by selected attribute
-      5. ML predictor
+      5. Forecast (if date detected) or Relationship Analysis / no-date UI
       6. Spatial autocorrelation (if polygon geometry available)
     """
     st.markdown("---")
@@ -383,13 +491,29 @@ def _render_upload_analysis(df, lat_col, lon_col, domain, gdf=None):
             width="stretch",
         )
 
-    # ── 5. ML predictor ───────────────────────────────────────────────────────
-    ml_predictor.render_predictor(
-        df,
-        key_prefix=f"upload_{domain}",
-        default_target=attr,
-        default_features=numeric_cols[:min(8, len(numeric_cols))],
-    )
+    # ── 5. Forecast or Relationship Analysis ─────────────────────────────────
+    if date_col:
+        _detect_note = {
+            "name_match": f"Date column **`{date_col}`** detected by name.",
+            "dtype":      f"Column **`{date_col}`** has a datetime type.",
+            "coercion":   f"Column **`{date_col}`** detected via content parsing.",
+        }.get(date_method, "")
+        st.info(f"**Time-series data detected.** {_detect_note} Forecasting future values.")
+
+        forecast_target = st.selectbox(
+            "Column to forecast",
+            numeric_cols,
+            index=numeric_cols.index(attr) if attr in numeric_cols else 0,
+            key=f"upload_{domain}_fc_target",
+        )
+        ml_predictor.render_forecast(
+            df,
+            date_col=date_col,
+            target_col=forecast_target,
+            key_prefix=f"upload_{domain}_ts",
+        )
+    else:
+        _render_no_date_ui(df, numeric_cols, attr, key_prefix=f"upload_{domain}")
 
     # ── 6. Spatial Autocorrelation ──────────────────────────────────────────
     st.divider()
@@ -490,7 +614,7 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
             st.error(err)
             return None, None
 
-        df, is_valid, lat_col, lon_col, has_latlon = _validate(df)
+        df, is_valid, lat_col, lon_col, has_latlon, date_col, date_method = _validate(df)
 
         if not is_valid:
             st.error(
@@ -528,7 +652,10 @@ def uploader(domain: str, local_csv: str = None, label: str = "Upload a dataset"
         )
         source = "upload"
 
-        _render_upload_analysis(df, lat_col, lon_col, domain, gdf=gdf)
+        _render_upload_analysis(
+            df, lat_col, lon_col, domain,
+            date_col=date_col, date_method=date_method, gdf=gdf,
+        )
 
         return df, source
 

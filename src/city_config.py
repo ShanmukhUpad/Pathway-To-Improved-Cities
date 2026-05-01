@@ -60,8 +60,19 @@ class CityConfig:
     crash_dataset_id: Optional[str] = None
     token_env: str = ""
 
+    # Optional extra Chicago-specific CSVs (empty string = not present)
+    crash_csv_legacy: str = ""       # fallback crash dataset
+    energy_csv: str = ""             # building energy usage
+    crimes_supplemental_csv: str = "" # raw crimes dataset for station overlays
+    fire_stations_csv: str = ""
+    police_stations_csv: str = ""
+    acs_csv: str = ""                # ACS 5-year demographic data
+    population_csv: str = ""         # population counts by geography
+    cta_ridership_csv: str = ""      # CTA L-station ridership
+
     # Capability flags
     has_transport_layer: bool = False
+    has_energy_layer: bool = False
 
     # Helpers --------------------------------------------------------------
     def path(self, filename: str) -> str:
@@ -78,6 +89,14 @@ class CityConfig:
     @property
     def census_path(self) -> str:
         return self.path(self.census_csv)
+
+    @property
+    def crash_legacy_path(self) -> Optional[str]:
+        return self.path(self.crash_csv_legacy) if self.crash_csv_legacy else None
+
+    @property
+    def energy_path(self) -> Optional[str]:
+        return self.path(self.energy_csv) if self.energy_csv else None
 
     def normalize_area_key(self, value):
         """Normalize a CSV area value to match the boundary id space."""
@@ -125,6 +144,15 @@ CITIES: dict[str, CityConfig] = {
         crash_dataset_id="85ca-t3if",
         token_env="CHICAGO_DATA_PORTAL_TOKEN",
         has_transport_layer=True,
+        has_energy_layer=True,
+        crash_csv_legacy="Traffic_Crashes_-_Crashes_20260309.csv",
+        energy_csv="energy_usage_2010.csv",
+        crimes_supplemental_csv="Crimes_2026.csv",
+        fire_stations_csv="Fire_Stations.csv",
+        police_stations_csv="Police_Stations.csv",
+        acs_csv="acs_5yr.csv",
+        population_csv="population_counts.csv",
+        cta_ridership_csv="cta_ridership.csv",
     ),
     "new_york": CityConfig(
         key="new_york",
