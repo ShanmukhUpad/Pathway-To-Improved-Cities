@@ -1,3 +1,4 @@
+from io import StringIO
 import os
 from datetime import datetime
 import streamlit as st
@@ -20,8 +21,9 @@ CRIME_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crime_mont
 @st.cache_resource(show_spinner="Training crime prediction model...")
 def _train_crime_model(X_json: str, y_json: str):
     """Train a RandomForest once and cache the fitted model."""
-    X = pd.read_json(X_json)
-    y = pd.read_json(y_json, typ="series")
+    # pandas 2.1+ reads a bare string as a file path; wrap literal JSON in StringIO
+    X = pd.read_json(StringIO(X_json))
+    y = pd.read_json(StringIO(y_json), typ="series")
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X, y)
     return model
